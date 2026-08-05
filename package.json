@@ -1,0 +1,64 @@
+{
+  "name": "fac-transcript",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Application de transcription de cours magistraux",
+  "author": "FAC Transcript",
+  "main": "out/main/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "npm run typecheck && electron-vite build",
+    "test": "node --test --experimental-strip-types tests/regressions.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
+    "package:win": "npm run build && electron-builder --win nsis",
+    "package:mac": "npm run build && electron-builder --mac dmg --arm64",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "dependencies": {
+    "@electron-toolkit/utils": "latest",
+    "@fontsource-variable/geist": "latest",
+    "better-sqlite3": "12.11.1",
+    "extract-zip": "latest",
+    "ffmpeg-static": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "react-markdown": "latest",
+    "remark-gfm": "latest",
+    "thinking-orbs": "^0.2.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "latest",
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "@vitejs/plugin-react": "^5.1.4",
+    "electron": "39.8.10",
+    "electron-builder": "latest",
+    "electron-vite": "^5.0.0",
+    "typescript": "latest",
+    "vite": "^7.3.6"
+  },
+  "build": {
+    "appId": "fr.factranscript.app",
+    "productName": "FAC Transcript",
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**/*",
+      "node_modules/better-sqlite3/**/*"
+    ],
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.productivity"
+    }
+  }
+}
