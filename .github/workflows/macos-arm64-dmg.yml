@@ -1,0 +1,76 @@
+name: Build Windows and macOS installers
+
+on:
+  push:
+    branches: [macos]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-installer:
+    name: Windows NSIS installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: windows
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run package:win
+      - name: Verify installer
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem dist -Filter *.exe)
+          if ($installers.Count -ne 1) { throw "Expected one Windows installer, found $($installers.Count)." }
+          if ($installers[0].Length -lt 1MB) { throw "Windows installer is unexpectedly small." }
+          Write-Host "Installer: $($installers[0].FullName) ($($installers[0].Length) bytes)"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: FAC-Transcript-Windows-v0.2.0
+          path: dist/*.exe
+          if-no-files-found: error
+
+  macos-installer:
+    name: macOS Apple Silicon DMG
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: macos
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Verify Apple Silicon runner
+        run: test "$(uname -m)" = arm64
+      - name: Install CMake
+        run: brew install cmake
+      - run: npm ci
+      - run: npm test
+      - run: npm run package:mac
+      - name: Verify packaged app and bundled Whisper
+        shell: bash
+        run: |
+          shopt -s nullglob
+          apps=(dist/mac-arm64/*.app)
+          test "${#apps[@]}" -eq 1
+          app="${apps[0]}"
+          whisper="$app/Contents/Resources/vendor/whisper.cpp/darwin-arm64/whisper-cli"
+          test -x "$whisper"
+          architecture="$(file "$whisper")"
+          [[ "$architecture" == *arm64* ]]
+          dmgs=(dist/*.dmg)
+          test "${#dmgs[@]}" -eq 1
+          FAC_SMOKE_TEST=1 "$app/Contents/MacOS/FAC Transcript" >fac-smoke.log 2>&1
+          python3 -c "from pathlib import Path; assert 'FAC_SMOKE_READY' in Path('fac-smoke.log').read_text()"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: FAC-Transcript-macOS-Apple-Silicon-v0.2.0
+          path: dist/*.dmg
+          if-no-files-found: error

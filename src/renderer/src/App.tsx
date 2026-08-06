@@ -3,6 +3,7 @@ import type { JSX } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ThinkingOrb } from 'thinking-orbs'
+import { selectRecordingFormat } from './recording-format'
 import type { AppSettings, AssetStatus, CliModelOption, Course, DocumentVariant, JobProgress } from '../../shared/types'
 
 type IconName = 'record' | 'import' | 'settings' | 'copy' | 'export' | 'notion' | 'retry' | 'trash' | 'back' | 'close' | 'stop' | 'sparkles' | 'more' | 'edit'
@@ -100,9 +101,10 @@ function Recorder({ onFinished, onError }: { onFinished(courseId: string): void;
   const start = async (): Promise<void> => {
     try {
       const media = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false } })
-      const preferred = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus'].find((type) => MediaRecorder.isTypeSupported(type))
-      const mediaRecorder = new MediaRecorder(media, preferred ? { mimeType: preferred, audioBitsPerSecond: 64_000 } : undefined)
-      const result = await window.api.recording.start({ title, mimeType: mediaRecorder.mimeType || preferred || 'audio/webm' })
+      const preferred = selectRecordingFormat((type) => MediaRecorder.isTypeSupported(type))
+      const mediaRecorder = new MediaRecorder(media, preferred ? { mimeType: preferred.mimeType, audioBitsPerSecond: 64_000 } : undefined)
+      const mimeType = mediaRecorder.mimeType || preferred?.mimeType || 'audio/webm'
+      const result = await window.api.recording.start({ title, mimeType, extension: preferred?.extension })
       stream.current = media
       recorder.current = mediaRecorder
       courseId.current = result.course.id

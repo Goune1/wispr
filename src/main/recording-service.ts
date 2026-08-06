@@ -9,16 +9,29 @@ interface ActiveRecording {
   path: string
 }
 
+const recordingExtensions = new Set(['.m4a', '.webm', '.ogg'])
+
+export function recordingExtensionFor(input: RecordingStartInput): '.m4a' | '.webm' | '.ogg' {
+  if (input.extension !== undefined) {
+    if (!recordingExtensions.has(input.extension)) throw new Error('Extension d’enregistrement invalide.')
+    return input.extension
+  }
+  return input.mimeType.includes('ogg') ? '.ogg' : input.mimeType.includes('mp4') ? '.m4a' : '.webm'
+}
+
 export class RecordingService {
   private readonly active = new Map<string, ActiveRecording>()
+  private readonly database: AppDatabase
 
-  constructor(private readonly database: AppDatabase) {}
+  constructor(database: AppDatabase) {
+    this.database = database
+  }
 
   start(input: RecordingStartInput): Course {
     const settings = this.database.getSettings()
     mkdirSync(settings.audioStoragePath, { recursive: true })
     const id = randomUUID()
-    const extension = input.mimeType.includes('ogg') ? '.ogg' : input.mimeType.includes('mp4') ? '.m4a' : '.webm'
+    const extension = recordingExtensionFor(input)
     const sourceAudioPath = join(settings.audioStoragePath, `${id}${extension}`)
     const course: Course = {
       id,

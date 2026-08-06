@@ -63,6 +63,7 @@ export interface JobProgress {
 export interface RecordingStartInput {
   title: string
   mimeType: string
+  extension?: '.m4a' | '.webm' | '.ogg'
 }
 
 export interface RecordingStartResult {

@@ -12,7 +12,8 @@
     "test": "node --test --experimental-strip-types tests/regressions.test.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
     "package:win": "npm run build && electron-builder --win nsis --publish never",
-    "package:mac": "npm run build && electron-builder --mac dmg --arm64",
+    "prepare:whisper:mac": "bash scripts/prepare-whisper-macos-arm64.sh",
+    "package:mac": "npm run prepare:whisper:mac && npm run build && electron-builder --mac dmg --arm64 --publish never",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
@@ -53,12 +54,33 @@
     "directories": {
       "output": "dist"
     },
+    "extraResources": [
+      {
+        "from": "vendor/whisper.cpp/darwin-arm64",
+        "to": "vendor/whisper.cpp/darwin-arm64",
+        "filter": [
+          "**/*",
+          "!README.md"
+        ]
+      }
+    ],
     "win": {
       "target": "nsis"
     },
     "mac": {
-      "target": "dmg",
-      "category": "public.app-category.productivity"
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.productivity",
+      "hardenedRuntime": false,
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "FAC Transcript utilise le microphone pour enregistrer vos cours."
+      }
     }
   }
 }
