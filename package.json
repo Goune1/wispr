@@ -11,7 +11,7 @@
     "build": "npm run typecheck && electron-vite build",
     "test": "node --test --experimental-strip-types tests/regressions.test.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
-    "package:win": "npm run build && electron-builder --win nsis",
+    "package:win": "npm run build && electron-builder --win nsis --publish never",
     "package:mac": "npm run build && electron-builder --mac dmg --arm64",
     "postinstall": "electron-builder install-app-deps"
   },
