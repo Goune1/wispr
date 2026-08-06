@@ -1,6 +1,6 @@
 {
   "name": "fac-transcript",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Application de transcription de cours magistraux",
   "author": "FAC Transcript",
@@ -11,7 +11,7 @@
     "build": "npm run typecheck && electron-vite build",
     "test": "node --test --experimental-strip-types tests/regressions.test.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
-    "package:win": "npm run build && electron-builder --win nsis",
+    "package:win": "npm run build && electron-builder --win nsis --publish never",
     "package:mac": "npm run build && electron-builder --mac dmg --arm64",
     "postinstall": "electron-builder install-app-deps"
   },
