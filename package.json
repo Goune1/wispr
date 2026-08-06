@@ -13,7 +13,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
     "package:win": "npm run build && electron-builder --win nsis",
     "prepare:whisper:mac": "bash scripts/prepare-whisper-macos-arm64.sh",
-    "package:mac": "npm run prepare:whisper:mac && npm run build && electron-builder --mac dmg --arm64",
+    "package:mac": "npm run prepare:whisper:mac && npm run build && electron-builder --mac dmg --arm64 --publish never",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
