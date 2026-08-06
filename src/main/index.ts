@@ -202,7 +202,11 @@ app.whenReady().then(() => {
   database.recoverInterruptedCourses()
   recordingService = new RecordingService(database)
   jobManager = new JobManager(database, emitProgress, emitCourse)
-  assetManager = new AssetManager(database, join(userData, 'runtime'), emitProgress)
+  assetManager = new AssetManager(database, join(userData, 'runtime'), emitProgress, {
+    bundledWhisperDirectory: app.isPackaged
+      ? join(process.resourcesPath, 'vendor', 'whisper.cpp', 'darwin-arm64')
+      : join(app.getAppPath(), 'vendor', 'whisper.cpp', 'darwin-arm64')
+  })
   notionService = new NotionService(database, emitProgress)
   registerIpc()
   createWindow()

@@ -5,3 +5,7 @@ dist/
 .DS_Store
 
 .gstack/
+
+# Generated on Apple Silicon by scripts/prepare-whisper-macos-arm64.sh.
+vendor/whisper.cpp/darwin-arm64/*
+!vendor/whisper.cpp/darwin-arm64/README.md

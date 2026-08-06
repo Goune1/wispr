@@ -1,13 +1,17 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { AssetManager, preserveManagedAssetPaths, requiredCublasDll } from '../src/main/asset-manager.ts'
+import { AssetManager, preserveManagedAssetPaths, provisionBundledWhisper, requiredCublasDll } from '../src/main/asset-manager.ts'
 import { formatClaudeCliError } from '../src/main/cli-errors.ts'
 import { buildStudyPrompt } from '../src/main/study-prompt.ts'
 import { buildCleanupPrompt } from '../src/main/cleanup-prompt.ts'
 import { parseClaudeModelAliases, parseCodexModelCatalog } from '../src/main/model-catalog-parsers.ts'
+import { selectWhisperBinarySource } from '../src/main/whisper-platform.ts'
+import { cliExecutionPath, resolveCliExecutable } from '../src/main/cli-path.ts'
+import { selectRecordingFormat } from '../src/renderer/src/recording-format.ts'
+import { recordingExtensionFor } from '../src/main/recording-service.ts'
 import type { AppSettings } from '../src/shared/types.ts'
 
 function settings(overrides: Partial<AppSettings> = {}): AppSettings {
@@ -91,4 +95,66 @@ test('les catalogues des CLI sont réduits à des options de modèles sûres pou
 
   const claude = parseClaudeModelAliases("Provide an alias for the latest model (e.g.\n'fable', 'opus', or 'sonnet') or a\nmodel's full name")
   assert.deepEqual(claude.map((model) => model.id), ['fable', 'opus', 'sonnet', 'haiku'])
+})
+
+test('macOS Apple Silicon sélectionne le binaire Whisper embarqué plutôt qu’un asset GitHub absent', () => {
+  const source = selectWhisperBinarySource('darwin', 'arm64', [
+    { name: 'whisper-bin-x64.zip', browser_download_url: 'https://example.invalid/x64.zip' },
+    { name: 'whisper-bin-ubuntu-arm64.zip', browser_download_url: 'https://example.invalid/linux.zip' }
+  ])
+  assert.deepEqual(source, { kind: 'bundled', binaryName: 'whisper-cli' })
+})
+
+test('Windows conserve la préférence CUDA puis le repli CPU pour Whisper', () => {
+  const source = selectWhisperBinarySource('win32', 'x64', [
+    { name: 'whisper-bin-x64.zip', browser_download_url: 'https://example.invalid/cpu.zip' },
+    { name: 'whisper-bin-x64-cuda.zip', browser_download_url: 'https://example.invalid/cuda.zip' }
+  ])
+  assert.equal(source.kind, 'release')
+  if (source.kind === 'release') assert.equal(source.asset.name, 'whisper-bin-x64-cuda.zip')
+})
+
+test('le provisionnement macOS copie et rend exécutable le binaire vendor', () => {
+  const root = join(tmpdir(), `fac-vendor-${process.pid}-${Date.now()}`)
+  const source = join(root, 'source')
+  const destination = join(root, 'runtime')
+  mkdirSync(source, { recursive: true })
+  writeFileSync(join(source, 'whisper-cli'), '#!/bin/sh\nexit 0\n')
+  try {
+    const binary = provisionBundledWhisper(source, destination)
+    assert.equal(binary, join(destination, 'whisper-cli'))
+    assert.equal(existsSync(binary), true)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
+test('la résolution CLI macOS trouve Homebrew sans shell', () => {
+  const resolved = resolveCliExecutable('codex', {
+    platform: 'darwin', home: '/Users/ada', path: '/usr/bin', exists: (path) => path === '/opt/homebrew/bin/codex'
+  })
+  assert.equal(resolved, '/opt/homebrew/bin/codex')
+})
+
+test('le PATH d’exécution conserve le runtime Node voisin d’une CLI installée par nvm', () => {
+  const executable = '/Users/ada/.nvm/versions/node/v22.0.0/bin/claude'
+  const path = cliExecutionPath(executable, '/usr/bin', '/Users/ada')
+  assert.equal(path.split(':')[0], '/Users/ada/.nvm/versions/node/v22.0.0/bin')
+})
+
+test('la capture préfère AAC dans MP4 lorsque Chromium le prend en charge', () => {
+  const recording = selectRecordingFormat((mime) => mime === 'audio/mp4;codecs=mp4a.40.2')
+  assert.deepEqual(recording, { mimeType: 'audio/mp4;codecs=mp4a.40.2', extension: '.m4a' })
+})
+
+test('la capture WebM garde une extension WebM lorsque MP4 est indisponible', () => {
+  const recording = selectRecordingFormat((mime) => mime === 'audio/webm;codecs=opus')
+  assert.deepEqual(recording, { mimeType: 'audio/webm;codecs=opus', extension: '.webm' })
+})
+
+test('le main process rejette une extension audio injectée hors de la liste autorisée', () => {
+  assert.throws(
+    () => recordingExtensionFor({ title: 'Cours', mimeType: 'audio/mp4', extension: '/../escape' as '.m4a' }),
+    /Extension d’enregistrement invalide/
+  )
 })

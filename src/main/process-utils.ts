@@ -1,4 +1,5 @@
 import { spawn, type SpawnOptionsWithoutStdio } from 'node:child_process'
+import { cliExecutionPath, resolveCliExecutable } from './cli-path'
 
 export interface ProcessResult {
   stdout: string
@@ -12,10 +13,14 @@ export function runProcess(
 ): Promise<ProcessResult> {
   return new Promise((resolve, reject) => {
     const { input, onStderr, ...spawnOptions } = options
-    const child = spawn(executable, args, {
+    const isCli = executable === 'claude' || executable === 'codex'
+    const resolvedExecutable = isCli ? resolveCliExecutable(executable) : executable
+    const env = isCli ? { ...process.env, ...spawnOptions.env, PATH: cliExecutionPath(resolvedExecutable, spawnOptions.env?.PATH) } : spawnOptions.env
+    const child = spawn(resolvedExecutable, args, {
       ...spawnOptions,
+      env,
       windowsHide: true,
-      shell: process.platform === 'win32' && ['claude', 'codex'].includes(executable)
+      shell: process.platform === 'win32' && isCli
     })
     let stdout = ''
     let stderr = ''

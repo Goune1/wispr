@@ -2,6 +2,7 @@ import { chmodSync, copyFileSync, cpSync, createWriteStream, existsSync, mkdirSy
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { basename, dirname, join } from 'node:path'
+import { selectWhisperBinarySource, type WhisperReleaseAsset } from './whisper-platform.ts'
 import extract from 'extract-zip'
 import type { AppSettings, AssetStatus, JobProgress } from '../shared/types'
 import type { AppDatabase } from './database'
@@ -31,25 +32,51 @@ export function requiredCublasDll(entries: string[]): string | null {
   return entries.some((entry) => entry.toLowerCase() === cublas.toLowerCase()) ? null : cublas
 }
 
+export interface AssetManagerOptions {
+  platform?: NodeJS.Platform
+  arch?: string
+  bundledWhisperDirectory?: string
+}
+
+export function bundledWhisperDirectory(resourcesPath: string): string {
+  return join(resourcesPath, 'vendor', 'whisper.cpp', 'darwin-arm64')
+}
+
+export function provisionBundledWhisper(sourceDirectory: string, destinationDirectory: string): string {
+  const sourceBinary = join(sourceDirectory, 'whisper-cli')
+  if (!existsSync(sourceBinary)) throw new Error('Whisper Apple Silicon est absent. Sur macOS, exécutez `npm run prepare:whisper:mac` puis relancez l’application (ou utilisez un DMG qui inclut cette ressource).')
+  cpSync(sourceDirectory, destinationDirectory, { recursive: true, force: true })
+  const destinationBinary = join(destinationDirectory, 'whisper-cli')
+  chmodSync(destinationBinary, 0o755)
+  return destinationBinary
+}
+
 export class AssetManager {
   private readonly database: AppDatabase
   private readonly assetsDirectory: string
   private readonly emit: ProgressCallback
+  private readonly platform: NodeJS.Platform
+  private readonly arch: string
+  private readonly bundledWhisperDirectory: string
 
   constructor(
     database: AppDatabase,
     assetsDirectory: string,
-    emit: ProgressCallback
+    emit: ProgressCallback,
+    options: AssetManagerOptions = {}
   ) {
     this.database = database
     this.assetsDirectory = assetsDirectory
     this.emit = emit
+    this.platform = options.platform ?? process.platform
+    this.arch = options.arch ?? process.arch
+    this.bundledWhisperDirectory = options.bundledWhisperDirectory ?? bundledWhisperDirectory(process.resourcesPath ?? process.cwd())
   }
 
   status(): AssetStatus {
     let settings = this.database.getSettings()
     const expected = {
-      whisperBinaryPath: join(this.assetsDirectory, 'whisper.cpp', process.platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli'),
+      whisperBinaryPath: join(this.assetsDirectory, 'whisper.cpp', this.platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli'),
       whisperModelPath: join(this.assetsDirectory, 'models', 'ggml-large-v3-turbo-q5_0.bin'),
       whisperVadModelPath: join(this.assetsDirectory, 'models', 'ggml-silero-v6.2.0.bin')
     }
@@ -79,25 +106,30 @@ export class AssetManager {
     mkdirSync(whisperDirectory, { recursive: true })
     mkdirSync(modelsDirectory, { recursive: true })
 
-    const binaryName = process.platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli'
+    const binaryName = this.platform === 'win32' ? 'whisper-cli.exe' : 'whisper-cli'
     const binaryPath = join(whisperDirectory, binaryName)
     if (!existsSync(binaryPath)) {
-      const release = await this.fetchRelease()
-      const asset = this.selectBinaryAsset(release.assets)
-      const archivePath = join(this.assetsDirectory, basename(asset.name))
-      const extractionPath = join(this.assetsDirectory, `extract-${Date.now()}`)
-      await this.download(asset.browser_download_url, archivePath, 0, 20, `Téléchargement de ${asset.name}`)
-      mkdirSync(extractionPath, { recursive: true })
-      await extract(archivePath, { dir: extractionPath })
-      const discoveredBinary = this.findFile(extractionPath, binaryName)
-      if (!discoveredBinary) throw new Error(`Le binaire ${binaryName} est absent de l’archive téléchargée.`)
-      if (existsSync(whisperDirectory)) rmSync(whisperDirectory, { recursive: true, force: true })
-      cpSync(dirname(discoveredBinary), whisperDirectory, { recursive: true })
-      rmSync(archivePath, { force: true })
-      rmSync(extractionPath, { recursive: true, force: true })
+      const source = this.platform === 'darwin' && this.arch === 'arm64'
+        ? selectWhisperBinarySource(this.platform, this.arch, [])
+        : selectWhisperBinarySource(this.platform, this.arch, (await this.fetchRelease()).assets)
+      if (source.kind === 'bundled') {
+        provisionBundledWhisper(this.bundledWhisperDirectory, whisperDirectory)
+      } else {
+        const archivePath = join(this.assetsDirectory, basename(source.asset.name))
+        const extractionPath = join(this.assetsDirectory, `extract-${Date.now()}`)
+        await this.download(source.asset.browser_download_url, archivePath, 0, 20, `Téléchargement de ${source.asset.name}`)
+        mkdirSync(extractionPath, { recursive: true })
+        await extract(archivePath, { dir: extractionPath })
+        const discoveredBinary = this.findFile(extractionPath, binaryName)
+        if (!discoveredBinary) throw new Error(`Le binaire ${binaryName} est absent de l’archive téléchargée.`)
+        if (existsSync(whisperDirectory)) rmSync(whisperDirectory, { recursive: true, force: true })
+        cpSync(dirname(discoveredBinary), whisperDirectory, { recursive: true })
+        rmSync(archivePath, { force: true })
+        rmSync(extractionPath, { recursive: true, force: true })
+      }
     }
-    if (process.platform !== 'win32') chmodSync(binaryPath, 0o755)
-    if (process.platform === 'win32') await this.ensureCudaRuntime(whisperDirectory)
+    if (this.platform !== 'win32') chmodSync(binaryPath, 0o755)
+    if (this.platform === 'win32') await this.ensureCudaRuntime(whisperDirectory)
 
     const modelPath = join(modelsDirectory, 'ggml-large-v3-turbo-q5_0.bin')
     const vadModelPath = join(modelsDirectory, 'ggml-silero-v6.2.0.bin')
@@ -113,7 +145,7 @@ export class AssetManager {
     this.emit({ stage: 'download', progress: 100, message: 'Whisper local est prêt.' })
   }
 
-  private async fetchRelease(): Promise<{ assets: Array<{ name: string; browser_download_url: string }> }> {
+  private async fetchRelease(): Promise<{ assets: WhisperReleaseAsset[] }> {
     const response = await fetch('https://api.github.com/repos/ggml-org/whisper.cpp/releases/latest', {
       headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'FAC-Transcript' }
     })
@@ -148,22 +180,6 @@ export class AssetManager {
     }
     rmSync(archivePath, { force: true })
     rmSync(extractionPath, { recursive: true, force: true })
-  }
-
-  private selectBinaryAsset(assets: Array<{ name: string; browser_download_url: string }>): { name: string; browser_download_url: string } {
-    const zipAssets = assets.filter((asset) => asset.name.endsWith('.zip'))
-    let candidates: typeof zipAssets
-    if (process.platform === 'win32') {
-      candidates = zipAssets.filter((asset) => /cublas|cuda/i.test(asset.name) && /x64|win/i.test(asset.name))
-      if (!candidates.length) candidates = zipAssets.filter((asset) => /whisper-bin-x64/i.test(asset.name))
-    } else if (process.platform === 'darwin' && process.arch === 'arm64') {
-      candidates = zipAssets.filter((asset) => /arm64|aarch64/i.test(asset.name) && !/android/i.test(asset.name))
-    } else {
-      candidates = zipAssets.filter((asset) => /x64|x86_64/i.test(asset.name))
-    }
-    const selected = candidates[0]
-    if (!selected) throw new Error(`Aucun binaire whisper.cpp compatible avec ${process.platform}/${process.arch} dans la dernière release.`)
-    return selected
   }
 
   private async download(url: string, destination: string, start: number, end: number, message: string): Promise<void> {
