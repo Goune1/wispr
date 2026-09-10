@@ -2,7 +2,9 @@ import type { AppSettings, Course, JobProgress } from '../../shared/types'
 import { runProcess } from '../process-utils'
 import { tmpdir } from 'node:os'
 import { formatClaudeCliError } from '../cli-errors'
+import { buildClaudeArgs } from '../claude-cli'
 import { buildCleanupPrompt } from '../cleanup-prompt'
+import { stripModelCommentary } from '../model-output'
 
 export interface CleanupContext {
   course: Course
@@ -47,7 +49,7 @@ abstract class CliCleanupProvider implements CleanupProvider {
       })
       const prompt = buildCleanupPrompt(chunks[index], index + 1, chunks.length)
       try {
-        cleaned.push((await this.execute(prompt, settings)).trim())
+        cleaned.push(stripModelCommentary(await this.execute(prompt, settings)))
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         if (/rate.?limit|429|quota|too many requests/i.test(message)) {
@@ -64,9 +66,7 @@ export class ClaudeCodeProvider extends CliCleanupProvider {
   protected async execute(prompt: string, settings: AppSettings): Promise<string> {
     let stdout: string
     try {
-      const args = ['-p', '--output-format', 'json']
-      if (settings.claudeModel) args.push('--model', settings.claudeModel)
-      ;({ stdout } = await runProcess('claude', args, { input: prompt, cwd: tmpdir() }))
+      ;({ stdout } = await runProcess('claude', buildClaudeArgs(settings), { input: prompt, cwd: tmpdir() }))
     } catch (error) {
       throw new Error(formatClaudeCliError(error))
     }

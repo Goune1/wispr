@@ -7,6 +7,7 @@ import type { AppSettings, Course, CourseStatus } from '../shared/types'
 interface CourseRow {
   id: string
   title: string
+  subject: string
   created_at: string
   duration_ms: number
   status: CourseStatus
@@ -37,6 +38,7 @@ export class AppDatabase {
       CREATE TABLE IF NOT EXISTS courses (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
+        subject TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL,
         duration_ms INTEGER NOT NULL DEFAULT 0,
         status TEXT NOT NULL,
@@ -58,6 +60,9 @@ export class AppDatabase {
     if (!courseColumns.some((column) => column.name === 'study_markdown')) {
       this.db.exec('ALTER TABLE courses ADD COLUMN study_markdown TEXT')
     }
+    if (!courseColumns.some((column) => column.name === 'subject')) {
+      this.db.exec("ALTER TABLE courses ADD COLUMN subject TEXT NOT NULL DEFAULT ''")
+    }
   }
 
   listCourses(): Course[] {
@@ -73,10 +78,10 @@ export class AppDatabase {
   createCourse(course: Course): Course {
     this.db.prepare(`
       INSERT INTO courses (
-        id, title, created_at, duration_ms, status, source_audio_path, wav_path,
+        id, title, subject, created_at, duration_ms, status, source_audio_path, wav_path,
         raw_transcript, clean_transcript, study_markdown, error_stage, error_message
       ) VALUES (
-        @id, @title, @createdAt, @durationMs, @status, @sourceAudioPath, @wavPath,
+        @id, @title, @subject, @createdAt, @durationMs, @status, @sourceAudioPath, @wavPath,
         @rawTranscript, @cleanTranscript, @studyMarkdown, @errorStage, @errorMessage
       )
     `).run(course)
@@ -85,7 +90,7 @@ export class AppDatabase {
 
   updateCourse(id: string, patch: Partial<Omit<Course, 'id'>>): Course {
     const keyMap: Record<string, string> = {
-      title: 'title', createdAt: 'created_at', durationMs: 'duration_ms', status: 'status',
+      title: 'title', subject: 'subject', createdAt: 'created_at', durationMs: 'duration_ms', status: 'status',
       sourceAudioPath: 'source_audio_path', wavPath: 'wav_path', rawTranscript: 'raw_transcript',
       cleanTranscript: 'clean_transcript', studyMarkdown: 'study_markdown',
       errorStage: 'error_stage', errorMessage: 'error_message'
@@ -178,6 +183,7 @@ export class AppDatabase {
     return {
       id: row.id,
       title: row.title,
+      subject: row.subject,
       createdAt: row.created_at,
       durationMs: row.duration_ms,
       status: row.status,

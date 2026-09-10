@@ -19,6 +19,15 @@ let assetManager: AssetManager
 let notionService: NotionService
 let downloadPromise: Promise<void> | null = null
 
+// L'application empaquetée prend son icône dans le bundle ; en développement il faut la poser
+// à la main, sinon la barre des tâches et le Dock affichent celle d'Electron.
+const developmentIconPath = join(__dirname, '../../build/icon.png')
+
+function applyDevelopmentIcon(): void {
+  if (app.isPackaged || !existsSync(developmentIconPath)) return
+  if (process.platform === 'darwin') app.dock?.setIcon(developmentIconPath)
+}
+
 function broadcast(channel: string, value: unknown): void {
   for (const window of BrowserWindow.getAllWindows()) window.webContents.send(channel, value)
 }
@@ -38,6 +47,7 @@ function createWindow(): void {
     minWidth: 940,
     minHeight: 640,
     backgroundColor: '#0c0c0e',
+    ...(app.isPackaged || !existsSync(developmentIconPath) ? {} : { icon: developmentIconPath }),
     titleBarStyle: 'hidden',
     titleBarOverlay: { color: '#0c0c0e', symbolColor: '#a8a39d', height: 42 },
     show: false,
@@ -99,6 +109,11 @@ function registerIpc(): void {
     else if (course.errorStage === 'cleanup' && course.rawTranscript) jobManager.startCleanup(id)
     else jobManager.start(id)
   })
+  ipcMain.handle(IPC.coursesProcess, (_event, id: string) => {
+    const course = requireCourse(id)
+    if (course.status === 'recording') throw new Error('L’enregistrement est encore en cours.')
+    jobManager.start(id)
+  })
   ipcMain.handle(IPC.coursesCleanup, (_event, id: string) => {
     requireCourse(id)
     jobManager.startCleanup(id)
@@ -131,6 +146,7 @@ function registerIpc(): void {
     const course = database.createCourse({
       id,
       title: parse(basename(source)).name,
+      subject: '',
       createdAt: new Date().toISOString(),
       durationMs: 0,
       status: 'recorded',
@@ -171,7 +187,7 @@ function registerIpc(): void {
   ipcMain.handle(IPC.recordingFinish, async (_event, input: RecordingFinishInput) => {
     const course = await recordingService.finish(input.courseId, input.durationMs)
     emitCourse(course)
-    jobManager.start(course.id)
+    return course
   })
   ipcMain.handle(IPC.recordingCancel, (_event, courseId: string) => recordingService.cancel(courseId))
 
@@ -197,6 +213,7 @@ function registerIpc(): void {
 
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('fr.factranscript.app')
+  applyDevelopmentIcon()
   const userData = app.getPath('userData')
   database = new AppDatabase(join(userData, 'fac-transcript.sqlite3'), join(userData, 'audio'))
   database.recoverInterruptedCourses()

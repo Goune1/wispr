@@ -2,6 +2,7 @@ import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { Course, RecordingStartInput } from '../shared/types'
+import { buildCourseMetadata } from '../shared/course-metadata.ts'
 import type { AppDatabase } from './database'
 
 interface ActiveRecording {
@@ -33,10 +34,12 @@ export class RecordingService {
     const id = randomUUID()
     const extension = recordingExtensionFor(input)
     const sourceAudioPath = join(settings.audioStoragePath, `${id}${extension}`)
+    const { title, subject, createdAt } = buildCourseMetadata(input)
     const course: Course = {
       id,
-      title: input.title.trim() || `Cours du ${new Date().toLocaleDateString('fr-FR')}`,
-      createdAt: new Date().toISOString(),
+      title,
+      subject,
+      createdAt,
       durationMs: 0,
       status: 'recording',
       sourceAudioPath,

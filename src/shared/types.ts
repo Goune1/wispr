@@ -14,6 +14,7 @@ export type CleanupProviderName = 'claude-code' | 'codex'
 export interface Course {
   id: string
   title: string
+  subject: string
   createdAt: string
   durationMs: number
   status: CourseStatus
@@ -62,6 +63,7 @@ export interface JobProgress {
 
 export interface RecordingStartInput {
   title: string
+  subject: string
   mimeType: string
   extension?: '.m4a' | '.webm' | '.ogg'
 }
@@ -93,6 +95,7 @@ export interface AppApi {
     rename(id: string, title: string): Promise<Course>
     remove(id: string): Promise<void>
     retry(id: string): Promise<void>
+    startProcessing(id: string): Promise<void>
     rerunCleanup(id: string): Promise<void>
     generateStudyGuide(id: string): Promise<void>
     importAudio(): Promise<Course | null>
@@ -102,7 +105,7 @@ export interface AppApi {
   recording: {
     start(input: RecordingStartInput): Promise<RecordingStartResult>
     writeChunk(courseId: string, chunk: Uint8Array): Promise<void>
-    finish(input: RecordingFinishInput): Promise<void>
+    finish(input: RecordingFinishInput): Promise<Course>
     cancel(courseId: string): Promise<void>
   }
   settings: {
@@ -128,6 +131,7 @@ export const IPC = {
   coursesRename: 'courses:rename',
   coursesRemove: 'courses:remove',
   coursesRetry: 'courses:retry',
+  coursesProcess: 'courses:process',
   coursesCleanup: 'courses:cleanup',
   coursesStudy: 'courses:study',
   coursesImport: 'courses:import',

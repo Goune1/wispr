@@ -9,6 +9,7 @@ const api: AppApi = {
     rename: (id, title) => ipcRenderer.invoke(IPC.coursesRename, id, title),
     remove: (id) => ipcRenderer.invoke(IPC.coursesRemove, id),
     retry: (id) => ipcRenderer.invoke(IPC.coursesRetry, id),
+    startProcessing: (id) => ipcRenderer.invoke(IPC.coursesProcess, id),
     rerunCleanup: (id) => ipcRenderer.invoke(IPC.coursesCleanup, id),
     generateStudyGuide: (id) => ipcRenderer.invoke(IPC.coursesStudy, id),
     importAudio: () => ipcRenderer.invoke(IPC.coursesImport),

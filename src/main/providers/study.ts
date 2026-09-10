@@ -1,6 +1,8 @@
 import { tmpdir } from 'node:os'
 import type { AppSettings, Course, JobProgress } from '../../shared/types'
+import { buildClaudeArgs } from '../claude-cli'
 import { formatClaudeCliError } from '../cli-errors'
+import { stripModelCommentary } from '../model-output'
 import { runProcess } from '../process-utils'
 import { buildStudyPrompt } from '../study-prompt'
 
@@ -32,17 +34,15 @@ export class ClaudeStudyProvider implements StudyProvider {
   async generate({ course, cleanTranscript, settings, emit }: StudyContext): Promise<string> {
     emit({ courseId: course.id, stage: 'study', progress: 10, message: 'Analyse du cours et construction de la fiche…' })
     try {
-      const args = ['-p', '--output-format', 'json']
-      if (settings.claudeModel) args.push('--model', settings.claudeModel)
-      const { stdout } = await runProcess('claude', args, {
-        input: buildStudyPrompt(course.title, cleanTranscript),
+      const { stdout } = await runProcess('claude', buildClaudeArgs(settings), {
+        input: buildStudyPrompt(course.title, cleanTranscript, course.subject),
         cwd: tmpdir()
       })
       const parsed = JSON.parse(stdout) as { result?: string; error?: string; is_error?: boolean }
       if (parsed.error || parsed.is_error || !parsed.result) {
         throw new Error(formatClaudeCliError(parsed.error || parsed.result || 'Claude Code n’a renvoyé aucune fiche.', 'la création de la fiche de révision'))
       }
-      return parsed.result.trim()
+      return stripModelCommentary(parsed.result)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       if (/Claude Code n’est plus authentifié|Limite de requêtes Claude|Claude Code a refusé/.test(message)) throw error
@@ -58,11 +58,11 @@ export class CodexStudyProvider implements StudyProvider {
     if (settings.codexModel) args.push('--model', settings.codexModel)
     args.push('-')
     const { stdout } = await runProcess('codex', args, {
-      input: buildStudyPrompt(course.title, cleanTranscript),
+      input: buildStudyPrompt(course.title, cleanTranscript, course.subject),
       cwd: tmpdir()
     })
     const result = parseCodexOutput(stdout)
     if (!result) throw new Error('Codex n’a renvoyé aucune fiche de révision exploitable.')
-    return result.trim()
+    return stripModelCommentary(result)
   }
 }

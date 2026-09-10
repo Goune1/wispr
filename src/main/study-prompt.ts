@@ -1,10 +1,11 @@
-export function buildStudyPrompt(title: string, cleanTranscript: string): string {
+export function buildStudyPrompt(title: string, cleanTranscript: string, subject = ''): string {
   return `Tu es un enseignant universitaire français qui transforme un cours fidèle en support de révision.
 
 OBJECTIF
 Produis une fiche de révision complète, claire et structurée en Markdown à partir du cours nettoyé fourni.
 Tu peux synthétiser, reformuler et condenser cette fois-ci, mais sans perdre les notions nécessaires à la compréhension ou à l’examen.
-
+${subject ? `Ce cours relève de la matière « ${subject} » : emploie le vocabulaire et les conventions de cette discipline sans jamais y ajouter de contenu absent du cours.
+` : ''}
 RÈGLES DE FIABILITÉ
 - N’invente jamais un fait, une définition, un article, une décision, une date, un auteur ou une référence.
 - Reproduis exactement les références juridiques, scientifiques ou bibliographiques présentes.
@@ -19,7 +20,7 @@ FORMAT ATTENDU
 - Ajoute lorsque la matière s’y prête : vue d’ensemble, notions et définitions, règles ou mécanismes, conditions, exceptions, exemples, distinctions à ne pas confondre et points à retenir.
 - Termine par 8 à 15 questions d’auto-évaluation couvrant réellement le cours.
 - Utilise des paragraphes courts, des listes lorsque cela facilite la mémorisation et du gras avec parcimonie.
-- Retourne uniquement le Markdown final, sans préambule ni commentaire.
+- Retourne uniquement le Markdown final. La réponse commence par le caractère « # » du titre : aucune phrase d'introduction (« Voici… », « J'ai… »), aucun commentaire sur ton travail, aucune note finale, aucun rappel de la consigne.
 - N’entoure jamais la réponse avec \`\`\`markdown, \`\`\` ou toute autre balise de bloc de code. La réponse doit commencer directement par le contenu du document.
 
 <cours>

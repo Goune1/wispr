@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { JSX } from 'react'
+import type { FormEvent, JSX } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ThinkingOrb } from 'thinking-orbs'
 import { selectRecordingFormat } from './recording-format'
+import { filterCourses, listSubjects } from './course-filter'
+import { capturedMsAt, IDLE_CLOCK, pauseCapture, resumeCapture, startCapture, type CaptureClock } from './recording-clock'
+import logoUrl from './logo.png'
 import type { AppSettings, AssetStatus, CliModelOption, Course, DocumentVariant, JobProgress } from '../../shared/types'
+import type { CourseMetadataInput } from '../../shared/course-metadata'
+import { MAX_SUBJECT_LENGTH, MAX_TITLE_LENGTH, normalizeCourseMetadata } from '../../shared/course-metadata'
 
-type IconName = 'record' | 'import' | 'settings' | 'copy' | 'export' | 'notion' | 'retry' | 'trash' | 'back' | 'close' | 'stop' | 'sparkles' | 'more' | 'edit'
+type IconName = 'record' | 'import' | 'settings' | 'copy' | 'export' | 'notion' | 'retry' | 'trash' | 'back' | 'close' | 'stop' | 'sparkles' | 'more' | 'edit' | 'pause' | 'play' | 'search'
 
 function Icon({ name, size = 18 }: { name: IconName; size?: number }): JSX.Element {
   const paths: Record<IconName, JSX.Element> = {
@@ -23,7 +28,10 @@ function Icon({ name, size = 18 }: { name: IconName; size?: number }): JSX.Eleme
     stop: <rect x="7" y="7" width="10" height="10" rx="1" fill="currentColor" />,
     sparkles: <><path d="m12 3 1.2 3.8L17 8l-3.8 1.2L12 13l-1.2-3.8L7 8l3.8-1.2L12 3Z"/><path d="m18 14 .7 2.3L21 17l-2.3.7L18 20l-.7-2.3L15 17l2.3-.7L18 14Z"/></>,
     more: <><circle cx="5" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1" fill="currentColor" stroke="none"/></>,
-    edit: <><path d="M4 20h4l11-11-4-4L4 16v4Z"/><path d="m13.5 6.5 4 4"/></>
+    edit: <><path d="M4 20h4l11-11-4-4L4 16v4Z"/><path d="m13.5 6.5 4 4"/></>,
+    pause: <><rect x="8" y="6" width="3" height="12" rx="1" fill="currentColor"/><rect x="13" y="6" width="3" height="12" rx="1" fill="currentColor"/></>,
+    play: <path d="M9 6.5v11l9-5.5-9-5.5Z" fill="currentColor"/>,
+    search: <><circle cx="11" cy="11" r="6"/><path d="m20 20-3.6-3.6"/></>
   }
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>
 }
@@ -41,6 +49,16 @@ const thinkingStatusLabel: Partial<Record<Course['status'], string>> = {
 
 function isThinkingStatus(status: Course['status']): boolean {
   return status === 'transcribing' || status === 'cleaning' || status === 'studying'
+}
+
+// « recorded » couvre deux réalités : un cours dont le traitement n'a jamais été lancé, et un
+// passage éclair entre deux étapes de la chaîne. Seul le premier attend une action.
+function isAwaitingProcessing(course: Course): boolean {
+  return course.status === 'recorded' && !course.rawTranscript
+}
+
+function courseMeta(course: Course): string {
+  return [course.subject, formatDate(course.createdAt), formatDuration(course.durationMs)].filter(Boolean).join(' · ')
 }
 
 function formatDuration(milliseconds: number): string {
@@ -73,42 +91,91 @@ function CourseRow({ course, selected, progress, onClick }: { course: Course; se
       : <span className={`timeline-dot status-${course.status}`} />}
     <span className="course-copy">
       <strong>{course.title}</strong>
-      <span>{formatDate(course.createdAt)} · {formatDuration(course.durationMs)}</span>
+      <span>{courseMeta(course)}</span>
       {progress && <span className="row-progress"><i style={{ width: `${progress.progress}%` }} /></span>}
     </span>
-    <span className={`status-pill status-${course.status}`}>{statusLabel[course.status]}</span>
+    <span className={`status-pill status-${isAwaitingProcessing(course) ? 'pending' : course.status}`}>{isAwaitingProcessing(course) ? 'À transcrire' : statusLabel[course.status]}</span>
   </button>
 }
 
-function Recorder({ onFinished, onError }: { onFinished(courseId: string): void; onError(message: string): void }): JSX.Element {
-  const [title, setTitle] = useState(`Cours du ${new Date().toLocaleDateString('fr-FR')}`)
-  const [state, setState] = useState<'idle' | 'recording' | 'stopping'>('idle')
+function RecordingSetupModal({ subjects, onCancel, onConfirm }: {
+  subjects: string[]; onCancel(): void; onConfirm(metadata: CourseMetadataInput): void
+}): JSX.Element {
+  const [title, setTitle] = useState('')
+  const [subject, setSubject] = useState(subjects[0] || '')
+  const [invalid, setInvalid] = useState<string | null>(null)
+  const startedOn = useMemo(() => new Date(), [])
+
+  const submit = (event: FormEvent): void => {
+    event.preventDefault()
+    try { onConfirm(normalizeCourseMetadata({ title, subject })) }
+    catch (error) { setInvalid(error instanceof Error ? error.message : String(error)) }
+  }
+
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel() }}>
+    <form className="modal compact" role="dialog" aria-modal="true" aria-labelledby="setup-title" onSubmit={submit}>
+      <header><div><span className="eyebrow">Nouvelle capture</span><h2 id="setup-title">Ce cours, c’est quoi ?</h2></div><button type="button" className="icon-button" onClick={onCancel}><Icon name="close"/><span className="sr-only">Annuler</span></button></header>
+      <div className="modal-form">
+        <label><span>Nom du cours</span><input autoFocus value={title} maxLength={MAX_TITLE_LENGTH} placeholder="Formation du contrat" onChange={(event) => setTitle(event.target.value)} /></label>
+        <label><span>Matière</span><input list="known-subjects" value={subject} maxLength={MAX_SUBJECT_LENGTH} placeholder="Droit des obligations" onChange={(event) => setSubject(event.target.value)} />
+          <datalist id="known-subjects">{subjects.map((value) => <option key={value} value={value} />)}</datalist></label>
+        <div className="auto-field"><span>Date ajoutée automatiquement</span><strong>{new Intl.DateTimeFormat('fr-FR', { dateStyle: 'long', timeStyle: 'short' }).format(startedOn)}</strong></div>
+        {invalid && <p className="form-error" role="alert">{invalid}</p>}
+      </div>
+      <footer><button type="button" className="text-button" onClick={onCancel}>Annuler</button><button type="submit" className="primary-button"><Icon name="record" size={13}/>Lancer l’enregistrement</button></footer>
+    </form>
+  </div>
+}
+
+function ProcessingChoiceModal({ course, onLater, onNow }: { course: Course; onLater(): void; onNow(): void }): JSX.Element {
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onLater() }}>
+    <section className="modal compact" role="dialog" aria-modal="true" aria-labelledby="choice-title">
+      <header><div><span className="eyebrow">Enregistrement terminé</span><h2 id="choice-title">Transcrire maintenant ?</h2></div></header>
+      <div className="modal-form">
+        <div className="choice-summary"><strong>{course.title}</strong><span>{[course.subject, formatDate(course.createdAt), formatDuration(course.durationMs)].filter(Boolean).join(' · ')}</span></div>
+        <p className="choice-help">La transcription puis le nettoyage durent plusieurs minutes. L’audio est déjà sauvegardé : vous pouvez aussi lancer le traitement plus tard depuis la fiche du cours.</p>
+      </div>
+      <footer><button className="text-button" onClick={onLater}>Plus tard</button><button className="primary-button" onClick={onNow}><Icon name="sparkles" size={14}/>Transcrire maintenant</button></footer>
+    </section>
+  </div>
+}
+
+function Recorder({ subjects, onFinished, onError }: {
+  subjects: string[]; onFinished(courseId: string, processingStarted: boolean): void; onError(message: string): void
+}): JSX.Element {
+  const [state, setState] = useState<'idle' | 'starting' | 'recording' | 'paused' | 'stopping'>('idle')
+  const [setupOpen, setSetupOpen] = useState(false)
+  const [active, setActive] = useState<Course | null>(null)
+  const [pending, setPending] = useState<Course | null>(null)
   const [elapsed, setElapsed] = useState(0)
   const recorder = useRef<MediaRecorder | null>(null)
   const stream = useRef<MediaStream | null>(null)
   const courseId = useRef<string | null>(null)
-  const startedAt = useRef(0)
   const writeQueue = useRef<Promise<void>>(Promise.resolve())
+  const clock = useRef<CaptureClock>(IDLE_CLOCK)
+  const capturedNow = (): number => capturedMsAt(clock.current, Date.now())
+  const live = state === 'recording' || state === 'paused' || state === 'stopping'
 
   useEffect(() => {
     if (state !== 'recording') return
-    const interval = window.setInterval(() => setElapsed(Date.now() - startedAt.current), 250)
+    const interval = window.setInterval(() => setElapsed(capturedNow()), 250)
     return () => window.clearInterval(interval)
   }, [state])
 
   useEffect(() => () => { stream.current?.getTracks().forEach((track) => track.stop()) }, [])
 
-  const start = async (): Promise<void> => {
+  const start = async (metadata: CourseMetadataInput): Promise<void> => {
     try {
       const media = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false } })
       const preferred = selectRecordingFormat((type) => MediaRecorder.isTypeSupported(type))
       const mediaRecorder = new MediaRecorder(media, preferred ? { mimeType: preferred.mimeType, audioBitsPerSecond: 64_000 } : undefined)
       const mimeType = mediaRecorder.mimeType || preferred?.mimeType || 'audio/webm'
-      const result = await window.api.recording.start({ title, mimeType, extension: preferred?.extension })
+      const result = await window.api.recording.start({ ...metadata, mimeType, extension: preferred?.extension })
       stream.current = media
       recorder.current = mediaRecorder
       courseId.current = result.course.id
-      startedAt.current = Date.now()
+      clock.current = startCapture(Date.now())
+      setActive(result.course)
       setElapsed(0)
       writeQueue.current = Promise.resolve()
       mediaRecorder.ondataavailable = (event) => {
@@ -124,7 +191,23 @@ function Recorder({ onFinished, onError }: { onFinished(courseId: string): void;
       setState('recording')
     } catch (error) {
       stream.current?.getTracks().forEach((track) => track.stop())
+      setState('idle')
       onError(error instanceof Error ? error.message : 'Impossible d’accéder au microphone.')
+    }
+  }
+
+  const togglePause = (): void => {
+    const currentRecorder = recorder.current
+    if (!currentRecorder) return
+    if (state === 'recording') {
+      currentRecorder.pause()
+      clock.current = pauseCapture(clock.current, Date.now())
+      setElapsed(clock.current.capturedMs)
+      setState('paused')
+    } else if (state === 'paused') {
+      currentRecorder.resume()
+      clock.current = resumeCapture(clock.current, Date.now())
+      setState('recording')
     }
   }
 
@@ -139,26 +222,58 @@ function Recorder({ onFinished, onError }: { onFinished(courseId: string): void;
     await writeQueue.current
     stream.current?.getTracks().forEach((track) => track.stop())
     try {
-      await window.api.recording.finish({ courseId: id, durationMs: Date.now() - startedAt.current })
-      onFinished(id)
-      setState('idle')
+      setPending(await window.api.recording.finish({ courseId: id, durationMs: capturedNow() }))
     } catch (error) {
       onError(error instanceof Error ? error.message : String(error))
+    } finally {
+      recorder.current = null
+      courseId.current = null
+      clock.current = IDLE_CLOCK
+      setActive(null)
       setState('idle')
     }
   }
 
-  return <section className={`recorder ${state !== 'idle' ? 'is-live' : ''}`}>
+  // L'audio est déjà clos et conservé : ce choix ne décide que du moment où la chaîne démarre.
+  const choose = async (startNow: boolean): Promise<void> => {
+    const course = pending
+    if (!course) return
+    setPending(null)
+    if (!startNow) return onFinished(course.id, false)
+    try {
+      await window.api.courses.startProcessing(course.id)
+      onFinished(course.id, true)
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error))
+      onFinished(course.id, false)
+    }
+  }
+
+  return <section className={`recorder ${live ? 'is-live' : ''} ${state === 'paused' ? 'is-paused' : ''}`}>
     <div className="recorder-intro">
       <span className="eyebrow">Nouvelle capture</span>
-      <input aria-label="Titre du cours" value={title} onChange={(event) => setTitle(event.target.value)} disabled={state !== 'idle'} />
-      <p>{state === 'idle' ? 'Le son est écrit sur le disque au fil de l’enregistrement.' : 'Micro actif · sauvegarde continue'}</p>
+      <h2 className={`recorder-title ${active ? '' : 'placeholder'}`}>{active ? active.title : 'Prêt à enregistrer'}</h2>
+      <p>{active
+        ? `${[active.subject, formatDate(active.createdAt)].filter(Boolean).join(' · ')} · ${state === 'paused' ? 'en pause, rien n’est capté' : 'micro actif, sauvegarde continue'}`
+        : 'Le nom du cours et la matière sont demandés au lancement. La date est ajoutée automatiquement.'}</p>
     </div>
     <div className="record-control">
-      {state === 'idle' ? <button className="record-button" onClick={() => void start()} aria-label="Commencer l’enregistrement"><span><Icon name="record" size={34}/></span>Record</button>
-        : <button className="record-button active" onClick={() => void stop()} disabled={state === 'stopping'} aria-label="Arrêter l’enregistrement"><span><Icon name="stop" size={30}/></span>{state === 'stopping' ? 'Patientez' : 'Stop'}</button>}
-      <time>{formatDuration(elapsed)}</time>
+      {live
+        ? <button className="record-button active" onClick={() => void stop()} disabled={state === 'stopping'} aria-label="Arrêter l’enregistrement"><span><Icon name="stop" size={30}/></span>{state === 'stopping' ? 'Patientez' : 'Stop'}</button>
+        : <button className="record-button" onClick={() => setSetupOpen(true)} disabled={state === 'starting'} aria-label="Commencer l’enregistrement"><span><Icon name="record" size={34}/></span>{state === 'starting' ? 'Micro…' : 'Record'}</button>}
+      <div className="record-side">
+        <time>{formatDuration(elapsed)}</time>
+        {live && <button className="pause-button" onClick={togglePause} disabled={state === 'stopping'}>
+          <Icon name={state === 'paused' ? 'play' : 'pause'} size={13}/>{state === 'paused' ? 'Reprendre' : 'Pause'}
+        </button>}
+      </div>
     </div>
+    {setupOpen && <RecordingSetupModal
+      subjects={subjects}
+      onCancel={() => setSetupOpen(false)}
+      onConfirm={(metadata) => { setSetupOpen(false); setState('starting'); void start(metadata) }}
+    />}
+    {pending && <ProcessingChoiceModal course={pending} onLater={() => void choose(false)} onNow={() => void choose(true)}/>}
   </section>
 }
 
@@ -219,14 +334,15 @@ function SettingsModal({ initial, assets, progress, onClose, onSaved, onDownload
 
 type DocumentView = DocumentVariant | 'source'
 
-function CourseDetail({ course, progress, onBack, onRename, onRetry, onCleanup, onStudy, onDelete, onError }: {
-  course: Course; progress?: JobProgress; onBack(): void; onRename(title: string): Promise<void>; onRetry(): void; onCleanup(): void; onStudy(): void; onDelete(): void; onError(message: string): void
+function CourseDetail({ course, progress, onBack, onRename, onRetry, onProcess, onCleanup, onStudy, onDelete, onError }: {
+  course: Course; progress?: JobProgress; onBack(): void; onRename(title: string): Promise<void>; onRetry(): void; onProcess(): void; onCleanup(): void; onStudy(): void; onDelete(): void; onError(message: string): void
 }): JSX.Element {
   const [view, setView] = useState<DocumentView>(course.studyMarkdown ? 'study' : 'course')
   const [editingTitle, setEditingTitle] = useState(false)
   const [titleDraft, setTitleDraft] = useState(course.title)
   const busy = ['converting', 'transcribing', 'cleaning', 'studying'].includes(course.status)
   const thinking = isThinkingStatus(course.status)
+  const awaiting = isAwaitingProcessing(course) && !busy
   const content = view === 'source' ? course.rawTranscript : view === 'study' ? course.studyMarkdown : course.cleanTranscript
   const variant: DocumentVariant = view === 'study' ? 'study' : 'course'
 
@@ -283,21 +399,25 @@ function CourseDetail({ course, progress, onBack, onRename, onRetry, onCleanup, 
       ? 'Traitement du cours en cours'
       : view === 'study'
         ? 'Aucune fiche de révision'
-        : 'Le cours complet n’est pas encore disponible'
+        : awaiting
+          ? 'Transcription pas encore lancée'
+          : 'Le cours complet n’est pas encore disponible'
   const emptyMessage = busy
     ? 'Vous pouvez quitter cet écran : le traitement continue en arrière-plan.'
     : view === 'study'
       ? 'Générez une fiche structurée pour réviser les notions, références et exceptions essentielles.'
-      : course.rawTranscript
-        ? 'Le son et la transcription source sont conservés. Vous pouvez relancer le nettoyage.'
-        : 'Relancez le traitement depuis le fichier audio conservé.'
+      : awaiting
+        ? 'L’enregistrement est sauvegardé. Lancez la transcription puis le nettoyage quand vous le souhaitez.'
+        : course.rawTranscript
+          ? 'Le son et la transcription source sont conservés. Vous pouvez relancer le nettoyage.'
+          : 'Relancez le traitement depuis le fichier audio conservé.'
 
   return <main className="detail">
     <header className="detail-header">
       <div className="detail-heading">
         <button className="back-button" onClick={onBack}><Icon name="back"/>Tous les cours</button>
         <div className="detail-title">
-          <span className="eyebrow">{formatDate(course.createdAt)} · {formatDuration(course.durationMs)}</span>
+          <span className="eyebrow">{courseMeta(course)}</span>
           {editingTitle
             ? <form className="title-editor" onSubmit={(event) => { event.preventDefault(); void saveTitle() }}>
                 <input
@@ -321,6 +441,7 @@ function CourseDetail({ course, progress, onBack, onRename, onRetry, onCleanup, 
       <button className="icon-button danger" onClick={onDelete} disabled={busy}><Icon name="trash"/><span className="sr-only">Supprimer</span></button>
     </header>
     {progress && busy && <ProgressBar progress={progress} thinking={thinking}/>}
+    {awaiting && <div className="pending-card"><div><strong>Ce cours attend d’être transcrit.</strong><p>Vous aviez choisi de traiter cet enregistrement plus tard. L’audio est conservé tel quel.</p></div><button className="primary-button" onClick={onProcess}><Icon name="sparkles"/>Transcrire et nettoyer</button></div>}
     {course.status === 'error' && <div className="error-card"><div><strong>Le traitement s’est arrêté pendant « {course.errorStage} ».</strong><p>{course.errorMessage}</p><small>L’audio source et les documents déjà produits sont conservés.</small></div><button className="secondary-button" onClick={onRetry}><Icon name="retry"/>Réessayer</button></div>}
     <div className="transcript-toolbar">
       <div className="tabs" role="tablist" aria-label="Documents du cours">
@@ -351,7 +472,7 @@ function CourseDetail({ course, progress, onBack, onRename, onRetry, onCleanup, 
           : <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
         : <div className={`empty-transcript ${thinking ? 'is-thinking' : ''}`}>{thinking
           ? <ThinkingOrb state="connecting" size={64} theme="dark" aria-label={thinkingStatusLabel[course.status]}/>
-          : <Icon name="sparkles" size={28}/>}<h3>{emptyTitle}</h3><p>{emptyMessage}</p>{view === 'study' && course.cleanTranscript && !busy && <button className="primary-button" onClick={generateStudy}>Créer la fiche de révision</button>}{view === 'course' && course.rawTranscript && !busy && <button className="secondary-button" onClick={onCleanup}>Nettoyer à nouveau</button>}</div>}
+          : <Icon name="sparkles" size={28}/>}<h3>{emptyTitle}</h3><p>{emptyMessage}</p>{view === 'study' && course.cleanTranscript && !busy && <button className="primary-button" onClick={generateStudy}>Créer la fiche de révision</button>}{view === 'course' && course.rawTranscript && !busy && <button className="secondary-button" onClick={onCleanup}>Nettoyer à nouveau</button>}{view === 'course' && awaiting && <button className="primary-button" onClick={onProcess}>Transcrire et nettoyer</button>}</div>}
     </article>
   </main>
 }
@@ -365,6 +486,8 @@ export function App(): JSX.Element {
   const [assets, setAssets] = useState<AssetStatus | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
+  const [subjectFilter, setSubjectFilter] = useState('')
 
   const load = useCallback(async () => {
     const [courseValues, settingValues, assetValues] = await Promise.all([window.api.courses.list(), window.api.settings.get(), window.api.assets.status()])
@@ -386,6 +509,14 @@ export function App(): JSX.Element {
   }, [load])
 
   const selected = useMemo(() => courses.find((course) => course.id === selectedId) || null, [courses, selectedId])
+  const subjects = useMemo(() => [...new Set(courses.map((course) => course.subject).filter(Boolean))], [courses])
+  const subjectOptions = useMemo(() => listSubjects(courses), [courses])
+  const visibleCourses = useMemo(() => filterCourses(courses, { query, subject: subjectFilter }), [courses, query, subjectFilter])
+  const filtering = Boolean(query.trim() || subjectFilter)
+
+  useEffect(() => {
+    if (subjectFilter && !subjectOptions.includes(subjectFilter)) setSubjectFilter('')
+  }, [subjectFilter, subjectOptions])
   const importAudio = async (): Promise<void> => {
     try { const course = await window.api.courses.importAudio(); if (course) setSelectedId(course.id) }
     catch (e) { setError(e instanceof Error ? e.message : String(e)) }
@@ -405,13 +536,14 @@ export function App(): JSX.Element {
   }
 
   if (selected) return <div className="app-shell">
-    <div className="titlebar"><span className="brand-mark">F</span><span>FAC Transcript</span></div>
+    <div className="titlebar"><img className="brand-mark" src={logoUrl} alt="" width={19} height={19}/><span>FAC Transcript</span></div>
     <CourseDetail
       course={selected}
       progress={progress[selected.id]}
       onBack={() => setSelectedId(null)}
       onRename={(title) => window.api.courses.rename(selected.id, title).then(() => undefined)}
       onRetry={() => void window.api.courses.retry(selected.id).catch((e) => setError(e instanceof Error ? e.message : String(e)))}
+      onProcess={() => void window.api.courses.startProcessing(selected.id).catch((e) => setError(e instanceof Error ? e.message : String(e)))}
       onCleanup={() => void window.api.courses.rerunCleanup(selected.id).catch((e) => setError(e instanceof Error ? e.message : String(e)))}
       onStudy={() => void window.api.courses.generateStudyGuide(selected.id).catch((e) => setError(e instanceof Error ? e.message : String(e)))}
       onDelete={() => void remove(selected)}
@@ -421,13 +553,27 @@ export function App(): JSX.Element {
   </div>
 
   return <div className="app-shell">
-    <div className="titlebar"><span className="brand-mark">F</span><span>FAC Transcript</span></div>
+    <div className="titlebar"><img className="brand-mark" src={logoUrl} alt="" width={19} height={19}/><span>FAC Transcript</span></div>
     <main className="home">
       <header className="home-header"><div><span className="eyebrow">Bibliothèque personnelle</span><h1>Vos cours, mot pour mot.</h1></div><div className="header-actions"><button className="secondary-button" onClick={() => void importAudio()}><Icon name="import"/>Importer un audio</button><button className="icon-button" onClick={() => setSettingsOpen(true)}><Icon name="settings"/><span className="sr-only">Réglages</span></button></div></header>
-      <Recorder onFinished={(id) => setSelectedId(id)} onError={setError}/>
-      <section className="library"><div className="section-heading"><h2>Enregistrements</h2><span>{courses.length} {courses.length > 1 ? 'cours' : 'cours'}</span></div>
-        {courses.length ? <div className="course-list">{courses.map((course) => <CourseRow key={course.id} course={course} selected={false} progress={progress[course.id]} onClick={() => setSelectedId(course.id)}/>)}</div>
-          : <div className="empty-list"><span className="empty-line"/><p>Votre prochain cours apparaîtra ici.<br/>Donnez-lui un titre, puis lancez l’enregistrement.</p></div>}
+      <Recorder subjects={subjects} onFinished={(id, processingStarted) => { if (processingStarted) setSelectedId(id) }} onError={setError}/>
+      <section className="library">
+        <div className="section-heading">
+          <h2>Enregistrements</h2>
+          <div className="library-tools">
+            <label className="search-field"><Icon name="search" size={15}/><input type="search" value={query} placeholder="Rechercher un cours" aria-label="Rechercher un cours" onChange={(event) => setQuery(event.target.value)}/></label>
+            {subjectOptions.length > 0 && <select className="subject-filter" value={subjectFilter} aria-label="Trier par matière" onChange={(event) => setSubjectFilter(event.target.value)}>
+              <option value="">Toutes les matières</option>
+              {subjectOptions.map((value) => <option key={value} value={value}>{value}</option>)}
+            </select>}
+            <span>{filtering ? `${visibleCourses.length} sur ${courses.length}` : `${courses.length} cours`}</span>
+          </div>
+        </div>
+        {!courses.length
+          ? <div className="empty-list"><span className="empty-line"/><p>Votre prochain cours apparaîtra ici.<br/>Nommez-le, indiquez la matière, puis lancez l’enregistrement.</p></div>
+          : visibleCourses.length
+            ? <div className="course-list">{visibleCourses.map((course) => <CourseRow key={course.id} course={course} selected={false} progress={progress[course.id]} onClick={() => setSelectedId(course.id)}/>)}</div>
+            : <div className="empty-list"><span className="empty-line"/><p>Aucun cours ne correspond à cette recherche.</p><button className="secondary-button" onClick={() => { setQuery(''); setSubjectFilter('') }}>Réinitialiser</button></div>}
       </section>
     </main>
     {settingsOpen && settings && <SettingsModal initial={settings} assets={assets} progress={globalProgress} onClose={() => setSettingsOpen(false)} onSaved={(value) => void saveSettings(value)} onDownload={() => void download()}/>}

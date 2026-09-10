@@ -1,6 +1,6 @@
 {
   "name": "fac-transcript",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Application de transcription de cours magistraux",
   "author": "FAC Transcript",
@@ -65,7 +65,8 @@
       }
     ],
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "build/icon.png"
     },
     "mac": {
       "target": [
@@ -76,6 +77,7 @@
           ]
         }
       ],
+      "icon": "build/icon.icns",
       "category": "public.app-category.productivity",
       "hardenedRuntime": false,
       "extendInfo": {

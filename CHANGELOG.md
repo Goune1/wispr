@@ -2,6 +2,21 @@
 
 Toutes les modifications notables de FAC Transcript sont documentées ici.
 
+## [0.3.0] - 2026-09-10
+
+### Added
+
+- Modale de préparation à l’ouverture d’un enregistrement : nom du cours et matière obligatoires, date attachée automatiquement.
+- Modale de fin d’enregistrement permettant de lancer la transcription et le nettoyage tout de suite ou plus tard.
+- Matière associée à chaque cours, affichée dans la bibliothèque et transmise au prompt de fiche de révision.
+- Pause et reprise pendant un enregistrement, sans que le temps en pause n’allonge la durée du cours.
+- Barre de recherche insensible aux accents, à la casse et à l’ordre des mots sur la page d’accueil.
+- Tri par matière ne proposant que les matières portées par un enregistrement existant.
+
+### Changed
+
+- Un enregistrement terminé ne lance plus la chaîne de traitement automatiquement : le cours attend la décision de l’utilisateur et peut être traité depuis sa fiche.
+
 ## [0.1.0] - 2026-08-05
 
 ### Added
