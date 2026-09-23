@@ -1,6 +1,8 @@
 import { app } from 'electron'
-import { autoUpdater } from 'electron-updater'
+import electronUpdater from 'electron-updater'
 import type { UpdateStatus } from '../shared/types'
+
+const { autoUpdater } = electronUpdater
 
 export class UpdateManager {
   private status: UpdateStatus = { phase: 'idle', currentVersion: app.getVersion() }
