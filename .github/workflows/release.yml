@@ -34,6 +34,7 @@ jobs:
           if [[ -n "$CSC_LINK" && -n "$CSC_KEY_PASSWORD" && -n "$APPLE_ID" && -n "$APPLE_APP_SPECIFIC_PASSWORD" && -n "$APPLE_TEAM_ID" ]]; then
             npx electron-builder --mac dmg zip --arm64 --publish never -c.mac.hardenedRuntime=true -c.mac.notarize=true
           else
+            unset CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID
             npx electron-builder --mac dmg --arm64 --publish never
             rm -f dist/latest-mac.yml dist/*.zip dist/*.zip.blockmap
           fi
