@@ -36,7 +36,7 @@ jobs:
           else
             unset CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID
             npx electron-builder --mac dmg --arm64 --publish never
-            rm -f dist/latest-mac.yml dist/*.zip dist/*.zip.blockmap
+            rm -f dist/latest-mac.yml dist/*.zip dist/*.zip.blockmap dist/*.dmg.blockmap
           fi
       - uses: actions/upload-artifact@v4
         with:
