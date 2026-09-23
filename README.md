@@ -8,7 +8,20 @@ Application Electron personnelle pour enregistrer et transcrire des cours longs 
 - `macos` : version macOS Apple Silicon et installeur `.dmg`, avec Whisper natif ARM64/Metal.
 - `main` : historique de la première version Windows.
 
-Les installateurs vérifiés sont publiés ensemble dans les releases GitHub.
+Les installateurs sont publiés dans les releases GitHub.
+
+## Mises à jour de l’application
+
+L’application installée vérifie les releases de `Goune1/wispr` au démarrage, puis toutes les six heures. Une nouvelle version est proposée dans l’application ; son téléchargement et le redémarrage pour l’installer restent à l’initiative de l’utilisateur. Le bouton **Réglages > Mises à jour > Vérifier** permet aussi de lancer une recherche manuelle. Cette fonction est désactivée pendant le développement local.
+
+Pour publier une version mise à jour :
+
+1. Définir la nouvelle version dans `package.json` et `package-lock.json`, puis pousser le code sur le dépôt.
+2. Pour activer les mises à jour automatiques macOS, configurer les secrets GitHub Actions `MAC_CSC_LINK` (certificat Developer ID Application `.p12` encodé en base64), `MAC_CSC_KEY_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` et `APPLE_TEAM_ID`.
+3. Créer et pousser un tag `vX.Y.Z` correspondant exactement à la version du paquet. Le workflow `.github/workflows/release.yml` construit uniquement macOS et crée une release brouillon. Avec les secrets Apple, il publie un DMG signé et notarisé, un ZIP et `latest-mac.yml` ; sans eux, il publie seulement le DMG non signé pour installation manuelle.
+4. Vérifier le brouillon puis publier la release. Les applications déjà installées avec ce système de mise à jour détecteront alors la nouvelle version.
+
+La release `v0.3.0` ne contient qu’un DMG et ne possède pas les métadonnées de mise à jour. Une installation manuelle de la première version contenant ce système est donc nécessaire. Sur macOS, une application non signée ne peut pas installer de mise à jour automatique.
 
 ## État de la V1
 

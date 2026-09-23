@@ -1,0 +1,65 @@
+name: Publish macOS release
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: test "$(uname -m)" = arm64
+      - run: brew install cmake
+      - run: npm ci
+      - run: node -e "if ('v' + require('./package.json').version !== process.env.GITHUB_REF_NAME) process.exit(1)"
+      - run: npm test
+      - run: npm run prepare:whisper:mac
+      - run: npm run build
+      - name: Build macOS installer
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [[ -n "$CSC_LINK" && -n "$CSC_KEY_PASSWORD" && -n "$APPLE_ID" && -n "$APPLE_APP_SPECIFIC_PASSWORD" && -n "$APPLE_TEAM_ID" ]]; then
+            npx electron-builder --mac dmg zip --arm64 --publish never -c.mac.hardenedRuntime=true -c.mac.notarize=true
+          else
+            npx electron-builder --mac dmg --arm64 --publish never
+            rm -f dist/latest-mac.yml dist/*.zip dist/*.zip.blockmap
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-release
+          path: |
+            dist/*.dmg
+            dist/*.dmg.blockmap
+            dist/*.zip
+            dist/*.zip.blockmap
+            dist/latest-mac.yml
+          if-no-files-found: error
+
+  release:
+    needs: macos
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: macos-release
+          path: release
+      - name: Create draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release create "$GITHUB_REF_NAME" release/* --draft --verify-tag --title "FAC Transcript $GITHUB_REF_NAME"

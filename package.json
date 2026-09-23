@@ -1,6 +1,6 @@
 {
   "name": "fac-transcript",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Application de transcription de cours magistraux",
   "author": "FAC Transcript",
@@ -13,13 +13,19 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
     "package:win": "npm run build && electron-builder --win nsis",
     "prepare:whisper:mac": "bash scripts/prepare-whisper-macos-arm64.sh",
-    "package:mac": "npm run prepare:whisper:mac && npm run build && electron-builder --mac dmg --arm64 --publish never",
+    "package:mac": "npm run prepare:whisper:mac && npm run build && electron-builder --mac dmg zip --arm64 --publish never",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
+    "@blocknote/core": "^0.55.0",
+    "@blocknote/mantine": "^0.55.0",
+    "@blocknote/react": "^0.55.0",
     "@electron-toolkit/utils": "latest",
     "@fontsource-variable/geist": "latest",
+    "@mantine/core": "^8.3.18",
+    "@mantine/hooks": "^8.3.18",
     "better-sqlite3": "12.11.1",
+    "electron-updater": "^6.8.9",
     "extract-zip": "latest",
     "ffmpeg-static": "latest",
     "react": "latest",
@@ -43,6 +49,12 @@
   "build": {
     "appId": "fr.factranscript.app",
     "productName": "FAC Transcript",
+    "artifactName": "FAC-Transcript-${version}-${arch}.${ext}",
+    "publish": {
+      "provider": "github",
+      "owner": "Goune1",
+      "repo": "wispr"
+    },
     "asarUnpack": [
       "node_modules/ffmpeg-static/**/*",
       "node_modules/better-sqlite3/**/*"
@@ -72,6 +84,12 @@
       "target": [
         {
           "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
           "arch": [
             "arm64"
           ]

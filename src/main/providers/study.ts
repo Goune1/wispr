@@ -9,6 +9,7 @@ import { buildStudyPrompt } from '../study-prompt'
 export interface StudyContext {
   course: Course
   cleanTranscript: string
+  studentNotes: string
   settings: AppSettings
   emit(progress: JobProgress): void
 }
@@ -31,11 +32,11 @@ function parseCodexOutput(stdout: string): string {
 }
 
 export class ClaudeStudyProvider implements StudyProvider {
-  async generate({ course, cleanTranscript, settings, emit }: StudyContext): Promise<string> {
+  async generate({ course, cleanTranscript, studentNotes, settings, emit }: StudyContext): Promise<string> {
     emit({ courseId: course.id, stage: 'study', progress: 10, message: 'Analyse du cours et construction de la fiche…' })
     try {
       const { stdout } = await runProcess('claude', buildClaudeArgs(settings), {
-        input: buildStudyPrompt(course.title, cleanTranscript, course.subject),
+        input: buildStudyPrompt(course.title, cleanTranscript, course.subject, studentNotes),
         cwd: tmpdir()
       })
       const parsed = JSON.parse(stdout) as { result?: string; error?: string; is_error?: boolean }
@@ -52,13 +53,13 @@ export class ClaudeStudyProvider implements StudyProvider {
 }
 
 export class CodexStudyProvider implements StudyProvider {
-  async generate({ course, cleanTranscript, settings, emit }: StudyContext): Promise<string> {
+  async generate({ course, cleanTranscript, studentNotes, settings, emit }: StudyContext): Promise<string> {
     emit({ courseId: course.id, stage: 'study', progress: 10, message: 'Analyse du cours et construction de la fiche…' })
     const args = ['exec', '--json', '--sandbox', 'read-only', '--skip-git-repo-check']
     if (settings.codexModel) args.push('--model', settings.codexModel)
     args.push('-')
     const { stdout } = await runProcess('codex', args, {
-      input: buildStudyPrompt(course.title, cleanTranscript, course.subject),
+      input: buildStudyPrompt(course.title, cleanTranscript, course.subject, studentNotes),
       cwd: tmpdir()
     })
     const result = parseCodexOutput(stdout)

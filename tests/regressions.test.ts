@@ -13,11 +13,11 @@ import { parseClaudeModelAliases, parseCodexModelCatalog } from '../src/main/mod
 import { selectWhisperBinarySource } from '../src/main/whisper-platform.ts'
 import { cliExecutionPath, resolveCliExecutable } from '../src/main/cli-path.ts'
 import { selectRecordingFormat } from '../src/renderer/src/recording-format.ts'
-import { filterCourses, foldForSearch, listSubjects } from '../src/renderer/src/course-filter.ts'
+import { buildLibraryTree, filterCourses, foldForSearch, listSubjects, subjectsByRecentUse } from '../src/renderer/src/course-filter.ts'
 import { capturedMsAt, IDLE_CLOCK, pauseCapture, resumeCapture, startCapture } from '../src/renderer/src/recording-clock.ts'
 import { recordingExtensionFor } from '../src/main/recording-service.ts'
-import { buildCourseMetadata, normalizeCourseMetadata } from '../src/shared/course-metadata.ts'
-import type { AppSettings, Course } from '../src/shared/types.ts'
+import { buildCourseMetadata, normalizeCourseMetadata, normalizeFolderName } from '../src/shared/course-metadata.ts'
+import type { AppSettings, Course, CourseFolder } from '../src/shared/types.ts'
 
 function settings(overrides: Partial<AppSettings> = {}): AppSettings {
   return {
@@ -29,7 +29,7 @@ function settings(overrides: Partial<AppSettings> = {}): AppSettings {
 
 function course(overrides: Partial<Course> = {}): Course {
   return {
-    id: 'id', title: 'Cours', subject: '', createdAt: '2026-09-10T08:00:00.000Z', durationMs: 0, status: 'complete',
+    id: 'id', title: 'Cours', subject: '', folderId: null, createdAt: '2026-09-10T08:00:00.000Z', durationMs: 0, status: 'complete',
     sourceAudioPath: 'a.webm', wavPath: null, rawTranscript: null, cleanTranscript: null, studyMarkdown: null,
     errorStage: null, errorMessage: null, ...overrides
   }
@@ -227,10 +227,10 @@ test('la recherche de cours ignore les accents, la casse et l’ordre des mots',
     course({ id: '3', title: 'Suites topologiques', subject: 'Analyse' })
   ]
   assert.equal(foldForSearch('Droit pénal'), 'droit penal')
-  assert.deepEqual(filterCourses(library, { query: 'droit penal', subject: '' }).map((value) => value.id), ['2'])
-  assert.deepEqual(filterCourses(library, { query: 'CONTRAT formation', subject: '' }).map((value) => value.id), ['1'])
-  assert.deepEqual(filterCourses(library, { query: '  ', subject: '' }).map((value) => value.id), ['1', '2', '3'])
-  assert.deepEqual(filterCourses(library, { query: 'rien', subject: '' }), [])
+  assert.deepEqual(filterCourses(library, { query: 'droit penal', scope: { kind: 'root' } }).map((value) => value.id), ['2'])
+  assert.deepEqual(filterCourses(library, { query: 'CONTRAT formation', scope: { kind: 'root' } }).map((value) => value.id), ['1'])
+  assert.deepEqual(filterCourses(library, { query: '  ', scope: { kind: 'root' } }), [])
+  assert.deepEqual(filterCourses(library, { query: 'rien', scope: { kind: 'root' } }), [])
 })
 
 test('le tri par matière ne propose que les matières portées par un enregistrement existant', () => {
@@ -241,8 +241,40 @@ test('le tri par matière ne propose que les matières portées par un enregistr
     course({ id: '4', subject: 'Droit pénal' })
   ]
   assert.deepEqual(listSubjects(library), ['Analyse', 'Droit pénal'])
-  assert.deepEqual(filterCourses(library, { query: '', subject: 'Droit pénal' }).map((value) => value.id), ['1', '4'])
+  assert.deepEqual(filterCourses(library, { query: '', scope: { kind: 'subject', subject: 'Droit pénal' } }).map((value) => value.id), ['1', '4'])
   assert.deepEqual(listSubjects([course({ subject: '' })]), [])
+})
+
+function folder(overrides: Partial<CourseFolder> = {}): CourseFolder {
+  return { id: 'f', subject: 'Droit pénal', name: 'Dossier', createdAt: '2026-09-10T08:00:00.000Z', ...overrides }
+}
+
+test('l’arbre range chaque cours sous sa matière puis dans son sous-dossier', () => {
+  const folders = [
+    folder({ id: 'td', name: 'Travaux dirigés' }),
+    folder({ id: 'cm', name: 'Cours magistral' }),
+    folder({ id: 'vide', subject: 'Histoire du droit', name: 'Cours magistral' })
+  ]
+  const library = [
+    course({ id: '1', subject: 'Droit pénal', folderId: 'cm' }),
+    course({ id: '2', subject: 'Droit pénal', folderId: 'td' }),
+    course({ id: '3', subject: 'Droit pénal' }),
+    course({ id: '4', subject: '' })
+  ]
+  const tree = buildLibraryTree(library, folders)
+  assert.deepEqual(tree.map((node) => [node.subject, node.count]), [['Droit pénal', 3], ['Histoire du droit', 0], ['', 1]])
+  assert.deepEqual(tree[0].folders.map((node) => [node.folder.name, node.count]), [['Cours magistral', 1], ['Travaux dirigés', 1]])
+  assert.deepEqual(filterCourses(library, { query: '', scope: { kind: 'folder', folderId: 'td' } }).map((value) => value.id), ['2'])
+  assert.deepEqual(filterCourses(library, { query: '', scope: { kind: 'subject', subject: '' } }).map((value) => value.id), ['4'])
+  assert.deepEqual(filterCourses(library, { query: '', scope: { kind: 'subject', subject: 'Droit pénal' } }).map((value) => value.id), ['3'])
+  assert.deepEqual(filterCourses(library, { query: 'droit', scope: { kind: 'subject', subject: 'Droit pénal' } }).map((value) => value.id), ['1', '2', '3'])
+  assert.deepEqual(buildLibraryTree(library, folders, ['Anglais']).map((node) => node.subject), ['Anglais', 'Droit pénal', 'Histoire du droit', ''])
+})
+
+test('un nom de sous-dossier est obligatoire et nettoyé', () => {
+  assert.equal(normalizeFolderName('  Travaux   dirigés '), 'Travaux dirigés')
+  assert.throws(() => normalizeFolderName('   '), /obligatoire/)
+  assert.throws(() => normalizeFolderName('x'.repeat(61)), /60 caractères/)
 })
 
 test('une pause au milieu d’un cours n’allonge pas la durée enregistrée', () => {
@@ -261,4 +293,21 @@ test('reprendre une capture déjà en cours ne remet pas le compteur à zéro', 
   const running = startCapture(1_000)
   assert.deepEqual(resumeCapture(running, 5_000), running)
   assert.equal(capturedMsAt(IDLE_CLOCK, 10_000), 0)
+})
+
+test('la fiche de révision reçoit les notes de l’étudiant seulement quand il en a pris', () => {
+  const withNotes = buildStudyPrompt('Formation du contrat', 'Contenu.', 'Droit des obligations', '## Au tableau\n- art. 1113 C. civ.')
+  assert.match(withNotes, /<notes_etudiant>\n## Au tableau\n- art\. 1113 C\. civ\.\n<\/notes_etudiant>/)
+  assert.match(withNotes, /NOTES DE L’ÉTUDIANT/)
+  const withoutNotes = buildStudyPrompt('Formation du contrat', 'Contenu.', 'Droit des obligations', '  \n ')
+  assert.doesNotMatch(withoutNotes, /notes_etudiant|NOTES DE L’ÉTUDIANT/)
+})
+
+test('les matières proposées au lancement suivent l’usage le plus récent', () => {
+  const library = [
+    course({ id: '1', subject: 'Analyse', createdAt: '2026-09-20T08:00:00.000Z' }),
+    course({ id: '2', subject: 'Droit pénal', createdAt: '2026-09-22T08:00:00.000Z' }),
+    course({ id: '3', subject: 'Analyse', createdAt: '2026-09-10T08:00:00.000Z' })
+  ]
+  assert.deepEqual(subjectsByRecentUse(library, ['Analyse', 'Anglais', 'Droit pénal', 'Biologie']), ['Droit pénal', 'Analyse', 'Anglais', 'Biologie'])
 })

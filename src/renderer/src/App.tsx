@@ -1,501 +1,67 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { FormEvent, JSX } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import { ThinkingOrb } from 'thinking-orbs'
-import { selectRecordingFormat } from './recording-format'
-import { filterCourses, listSubjects } from './course-filter'
-import { capturedMsAt, IDLE_CLOCK, pauseCapture, resumeCapture, startCapture, type CaptureClock } from './recording-clock'
-import logoUrl from './logo.png'
-import type { AppSettings, AssetStatus, CliModelOption, Course, DocumentVariant, JobProgress } from '../../shared/types'
-import type { CourseMetadataInput } from '../../shared/course-metadata'
-import { MAX_SUBJECT_LENGTH, MAX_TITLE_LENGTH, normalizeCourseMetadata } from '../../shared/course-metadata'
+import type { JSX, MouseEvent as ReactMouseEvent } from 'react'
+import type { AppSettings, AssetStatus, Course, CourseFolder, CoursePlacement, JobProgress, UpdateStatus } from '../../shared/types'
+import { normalizeSubject } from '../../shared/course-metadata'
+import { buildLibraryTree, subjectsByRecentUse } from './course-filter'
+import { CommandPalette } from './CommandPalette'
+import type { LibraryActions, LibraryView } from './components'
+import { MoveDialog, QuickStartModal, SettingsModal } from './modals'
+import { sameRoute, useNavigation, type Route } from './navigation'
+import { CoursePage, HomePage, LocationPage } from './pages'
+import { Sidebar } from './Sidebar'
+import { ContextMenu, errorMessage, Icon, MOD_KEY, plural, type ContextMenuItem } from './ui'
+import { useRecorder, type Recorder, type RecordingMetadata } from './use-recorder'
 
-type IconName = 'record' | 'import' | 'settings' | 'copy' | 'export' | 'notion' | 'retry' | 'trash' | 'back' | 'close' | 'stop' | 'sparkles' | 'more' | 'edit' | 'pause' | 'play' | 'search'
-
-function Icon({ name, size = 18 }: { name: IconName; size?: number }): JSX.Element {
-  const paths: Record<IconName, JSX.Element> = {
-    record: <circle cx="12" cy="12" r="5" fill="currentColor" />,
-    import: <><path d="M12 3v12m0 0 4-4m-4 4-4-4"/><path d="M5 17v3h14v-3"/></>,
-    settings: <><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></>,
-    copy: <><rect x="8" y="8" width="11" height="11" rx="1"/><path d="M16 8V5H5v11h3"/></>,
-    export: <><path d="M12 15V3m0 0 4 4m-4-4L8 7"/><path d="M5 13v7h14v-7"/></>,
-    notion: <><rect x="4" y="3" width="16" height="18" rx="1"/><path d="M8 17V7l8 10V7"/></>,
-    retry: <><path d="M20 7v5h-5"/><path d="M19 12a7 7 0 1 0-2 5"/></>,
-    trash: <><path d="M4 7h16M9 3h6l1 4H8l1-4Z"/><path d="m7 7 1 14h8l1-14M10 11v6m4-6v6"/></>,
-    back: <path d="m15 18-6-6 6-6"/>,
-    close: <path d="m6 6 12 12M18 6 6 18"/>,
-    stop: <rect x="7" y="7" width="10" height="10" rx="1" fill="currentColor" />,
-    sparkles: <><path d="m12 3 1.2 3.8L17 8l-3.8 1.2L12 13l-1.2-3.8L7 8l3.8-1.2L12 3Z"/><path d="m18 14 .7 2.3L21 17l-2.3.7L18 20l-.7-2.3L15 17l2.3-.7L18 14Z"/></>,
-    more: <><circle cx="5" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="1" fill="currentColor" stroke="none"/></>,
-    edit: <><path d="M4 20h4l11-11-4-4L4 16v4Z"/><path d="m13.5 6.5 4 4"/></>,
-    pause: <><rect x="8" y="6" width="3" height="12" rx="1" fill="currentColor"/><rect x="13" y="6" width="3" height="12" rx="1" fill="currentColor"/></>,
-    play: <path d="M9 6.5v11l9-5.5-9-5.5Z" fill="currentColor"/>,
-    search: <><circle cx="11" cy="11" r="6"/><path d="m20 20-3.6-3.6"/></>
-  }
-  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>
+interface Notice {
+  tone: 'error' | 'info'
+  message: string
+  actions?: Array<{ label: string; run(): void }>
 }
 
-const statusLabel: Record<Course['status'], string> = {
-  recording: 'En cours', converting: 'Préparation', recorded: 'Audio prêt', transcribing: 'Transcription',
-  cleaning: 'Nettoyage', studying: 'Fiche de révision', complete: 'Terminé', error: 'À reprendre'
-}
-
-const thinkingStatusLabel: Partial<Record<Course['status'], string>> = {
-  transcribing: 'Transcription du cours en cours',
-  cleaning: 'Nettoyage de la transcription en cours',
-  studying: 'Création de la fiche de révision en cours'
-}
-
-function isThinkingStatus(status: Course['status']): boolean {
-  return status === 'transcribing' || status === 'cleaning' || status === 'studying'
-}
-
-// « recorded » couvre deux réalités : un cours dont le traitement n'a jamais été lancé, et un
-// passage éclair entre deux étapes de la chaîne. Seul le premier attend une action.
-function isAwaitingProcessing(course: Course): boolean {
-  return course.status === 'recorded' && !course.rawTranscript
-}
-
-function courseMeta(course: Course): string {
-  return [course.subject, formatDate(course.createdAt), formatDuration(course.durationMs)].filter(Boolean).join(' · ')
-}
-
-function formatDuration(milliseconds: number): string {
-  const seconds = Math.floor(milliseconds / 1000)
-  const hours = Math.floor(seconds / 3600)
-  const minutes = Math.floor((seconds % 3600) / 60)
-  const rest = seconds % 60
-  return hours ? `${hours}:${minutes.toString().padStart(2, '0')}:${rest.toString().padStart(2, '0')}` : `${minutes}:${rest.toString().padStart(2, '0')}`
-}
-
-function formatDate(value: string): string {
-  return new Intl.DateTimeFormat('fr-FR', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).format(new Date(value))
-}
-
-function ProgressBar({ progress, thinking = false }: { progress: JobProgress; thinking?: boolean }): JSX.Element {
-  return <div className="job-progress">
-    <div className="progress-meta">
-      <span className="progress-message">{thinking && <ThinkingOrb state="connecting" size={20} theme="dark" aria-label={progress.message}/>}<span>{progress.message}</span></span>
-      <strong>{progress.progress}%</strong>
-    </div>
-    <div className="progress-track"><span style={{ width: `${progress.progress}%` }} /></div>
-  </div>
-}
-
-function CourseRow({ course, selected, progress, onClick }: { course: Course; selected: boolean; progress?: JobProgress; onClick(): void }): JSX.Element {
-  const thinking = isThinkingStatus(course.status)
-  return <button className={`course-row ${selected ? 'selected' : ''}`} onClick={onClick}>
-    {thinking
-      ? <span className="timeline-orb"><ThinkingOrb state="connecting" size={20} theme="dark" aria-label={thinkingStatusLabel[course.status]}/></span>
-      : <span className={`timeline-dot status-${course.status}`} />}
-    <span className="course-copy">
-      <strong>{course.title}</strong>
-      <span>{courseMeta(course)}</span>
-      {progress && <span className="row-progress"><i style={{ width: `${progress.progress}%` }} /></span>}
-    </span>
-    <span className={`status-pill status-${isAwaitingProcessing(course) ? 'pending' : course.status}`}>{isAwaitingProcessing(course) ? 'À transcrire' : statusLabel[course.status]}</span>
-  </button>
-}
-
-function RecordingSetupModal({ subjects, onCancel, onConfirm }: {
-  subjects: string[]; onCancel(): void; onConfirm(metadata: CourseMetadataInput): void
-}): JSX.Element {
-  const [title, setTitle] = useState('')
-  const [subject, setSubject] = useState(subjects[0] || '')
-  const [invalid, setInvalid] = useState<string | null>(null)
-  const startedOn = useMemo(() => new Date(), [])
-
-  const submit = (event: FormEvent): void => {
-    event.preventDefault()
-    try { onConfirm(normalizeCourseMetadata({ title, subject })) }
-    catch (error) { setInvalid(error instanceof Error ? error.message : String(error)) }
-  }
-
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel() }}>
-    <form className="modal compact" role="dialog" aria-modal="true" aria-labelledby="setup-title" onSubmit={submit}>
-      <header><div><span className="eyebrow">Nouvelle capture</span><h2 id="setup-title">Ce cours, c’est quoi ?</h2></div><button type="button" className="icon-button" onClick={onCancel}><Icon name="close"/><span className="sr-only">Annuler</span></button></header>
-      <div className="modal-form">
-        <label><span>Nom du cours</span><input autoFocus value={title} maxLength={MAX_TITLE_LENGTH} placeholder="Formation du contrat" onChange={(event) => setTitle(event.target.value)} /></label>
-        <label><span>Matière</span><input list="known-subjects" value={subject} maxLength={MAX_SUBJECT_LENGTH} placeholder="Droit des obligations" onChange={(event) => setSubject(event.target.value)} />
-          <datalist id="known-subjects">{subjects.map((value) => <option key={value} value={value} />)}</datalist></label>
-        <div className="auto-field"><span>Date ajoutée automatiquement</span><strong>{new Intl.DateTimeFormat('fr-FR', { dateStyle: 'long', timeStyle: 'short' }).format(startedOn)}</strong></div>
-        {invalid && <p className="form-error" role="alert">{invalid}</p>}
-      </div>
-      <footer><button type="button" className="text-button" onClick={onCancel}>Annuler</button><button type="submit" className="primary-button"><Icon name="record" size={13}/>Lancer l’enregistrement</button></footer>
-    </form>
-  </div>
-}
-
-function ProcessingChoiceModal({ course, onLater, onNow }: { course: Course; onLater(): void; onNow(): void }): JSX.Element {
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onLater() }}>
-    <section className="modal compact" role="dialog" aria-modal="true" aria-labelledby="choice-title">
-      <header><div><span className="eyebrow">Enregistrement terminé</span><h2 id="choice-title">Transcrire maintenant ?</h2></div></header>
-      <div className="modal-form">
-        <div className="choice-summary"><strong>{course.title}</strong><span>{[course.subject, formatDate(course.createdAt), formatDuration(course.durationMs)].filter(Boolean).join(' · ')}</span></div>
-        <p className="choice-help">La transcription puis le nettoyage durent plusieurs minutes. L’audio est déjà sauvegardé : vous pouvez aussi lancer le traitement plus tard depuis la fiche du cours.</p>
-      </div>
-      <footer><button className="text-button" onClick={onLater}>Plus tard</button><button className="primary-button" onClick={onNow}><Icon name="sparkles" size={14}/>Transcrire maintenant</button></footer>
-    </section>
-  </div>
-}
-
-function Recorder({ subjects, onFinished, onError }: {
-  subjects: string[]; onFinished(courseId: string, processingStarted: boolean): void; onError(message: string): void
-}): JSX.Element {
-  const [state, setState] = useState<'idle' | 'starting' | 'recording' | 'paused' | 'stopping'>('idle')
-  const [setupOpen, setSetupOpen] = useState(false)
-  const [active, setActive] = useState<Course | null>(null)
-  const [pending, setPending] = useState<Course | null>(null)
-  const [elapsed, setElapsed] = useState(0)
-  const recorder = useRef<MediaRecorder | null>(null)
-  const stream = useRef<MediaStream | null>(null)
-  const courseId = useRef<string | null>(null)
-  const writeQueue = useRef<Promise<void>>(Promise.resolve())
-  const clock = useRef<CaptureClock>(IDLE_CLOCK)
-  const capturedNow = (): number => capturedMsAt(clock.current, Date.now())
-  const live = state === 'recording' || state === 'paused' || state === 'stopping'
-
-  useEffect(() => {
-    if (state !== 'recording') return
-    const interval = window.setInterval(() => setElapsed(capturedNow()), 250)
-    return () => window.clearInterval(interval)
-  }, [state])
-
-  useEffect(() => () => { stream.current?.getTracks().forEach((track) => track.stop()) }, [])
-
-  const start = async (metadata: CourseMetadataInput): Promise<void> => {
-    try {
-      const media = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false } })
-      const preferred = selectRecordingFormat((type) => MediaRecorder.isTypeSupported(type))
-      const mediaRecorder = new MediaRecorder(media, preferred ? { mimeType: preferred.mimeType, audioBitsPerSecond: 64_000 } : undefined)
-      const mimeType = mediaRecorder.mimeType || preferred?.mimeType || 'audio/webm'
-      const result = await window.api.recording.start({ ...metadata, mimeType, extension: preferred?.extension })
-      stream.current = media
-      recorder.current = mediaRecorder
-      courseId.current = result.course.id
-      clock.current = startCapture(Date.now())
-      setActive(result.course)
-      setElapsed(0)
-      writeQueue.current = Promise.resolve()
-      mediaRecorder.ondataavailable = (event) => {
-        if (!event.data.size || !courseId.current) return
-        const id = courseId.current
-        writeQueue.current = writeQueue.current
-          .then(async () => new Uint8Array(await event.data.arrayBuffer()))
-          .then((chunk) => window.api.recording.writeChunk(id, chunk))
-          .catch((error) => onError(error instanceof Error ? error.message : String(error)))
-      }
-      mediaRecorder.onerror = () => onError('Le navigateur a interrompu la capture du microphone.')
-      mediaRecorder.start(1000)
-      setState('recording')
-    } catch (error) {
-      stream.current?.getTracks().forEach((track) => track.stop())
-      setState('idle')
-      onError(error instanceof Error ? error.message : 'Impossible d’accéder au microphone.')
-    }
-  }
-
-  const togglePause = (): void => {
-    const currentRecorder = recorder.current
-    if (!currentRecorder) return
-    if (state === 'recording') {
-      currentRecorder.pause()
-      clock.current = pauseCapture(clock.current, Date.now())
-      setElapsed(clock.current.capturedMs)
-      setState('paused')
-    } else if (state === 'paused') {
-      currentRecorder.resume()
-      clock.current = resumeCapture(clock.current, Date.now())
-      setState('recording')
-    }
-  }
-
-  const stop = async (): Promise<void> => {
-    const currentRecorder = recorder.current
-    const id = courseId.current
-    if (!currentRecorder || !id) return
-    setState('stopping')
-    const stopped = new Promise<void>((resolve) => currentRecorder.addEventListener('stop', () => resolve(), { once: true }))
-    currentRecorder.stop()
-    await stopped
-    await writeQueue.current
-    stream.current?.getTracks().forEach((track) => track.stop())
-    try {
-      setPending(await window.api.recording.finish({ courseId: id, durationMs: capturedNow() }))
-    } catch (error) {
-      onError(error instanceof Error ? error.message : String(error))
-    } finally {
-      recorder.current = null
-      courseId.current = null
-      clock.current = IDLE_CLOCK
-      setActive(null)
-      setState('idle')
-    }
-  }
-
-  // L'audio est déjà clos et conservé : ce choix ne décide que du moment où la chaîne démarre.
-  const choose = async (startNow: boolean): Promise<void> => {
-    const course = pending
-    if (!course) return
-    setPending(null)
-    if (!startNow) return onFinished(course.id, false)
-    try {
-      await window.api.courses.startProcessing(course.id)
-      onFinished(course.id, true)
-    } catch (error) {
-      onError(error instanceof Error ? error.message : String(error))
-      onFinished(course.id, false)
-    }
-  }
-
-  return <section className={`recorder ${live ? 'is-live' : ''} ${state === 'paused' ? 'is-paused' : ''}`}>
-    <div className="recorder-intro">
-      <span className="eyebrow">Nouvelle capture</span>
-      <h2 className={`recorder-title ${active ? '' : 'placeholder'}`}>{active ? active.title : 'Prêt à enregistrer'}</h2>
-      <p>{active
-        ? `${[active.subject, formatDate(active.createdAt)].filter(Boolean).join(' · ')} · ${state === 'paused' ? 'en pause, rien n’est capté' : 'micro actif, sauvegarde continue'}`
-        : 'Le nom du cours et la matière sont demandés au lancement. La date est ajoutée automatiquement.'}</p>
-    </div>
-    <div className="record-control">
-      {live
-        ? <button className="record-button active" onClick={() => void stop()} disabled={state === 'stopping'} aria-label="Arrêter l’enregistrement"><span><Icon name="stop" size={30}/></span>{state === 'stopping' ? 'Patientez' : 'Stop'}</button>
-        : <button className="record-button" onClick={() => setSetupOpen(true)} disabled={state === 'starting'} aria-label="Commencer l’enregistrement"><span><Icon name="record" size={34}/></span>{state === 'starting' ? 'Micro…' : 'Record'}</button>}
-      <div className="record-side">
-        <time>{formatDuration(elapsed)}</time>
-        {live && <button className="pause-button" onClick={togglePause} disabled={state === 'stopping'}>
-          <Icon name={state === 'paused' ? 'play' : 'pause'} size={13}/>{state === 'paused' ? 'Reprendre' : 'Pause'}
-        </button>}
-      </div>
-    </div>
-    {setupOpen && <RecordingSetupModal
-      subjects={subjects}
-      onCancel={() => setSetupOpen(false)}
-      onConfirm={(metadata) => { setSetupOpen(false); setState('starting'); void start(metadata) }}
-    />}
-    {pending && <ProcessingChoiceModal course={pending} onLater={() => void choose(false)} onNow={() => void choose(true)}/>}
-  </section>
-}
-
-function SettingsModal({ initial, assets, progress, onClose, onSaved, onDownload }: {
-  initial: AppSettings; assets: AssetStatus | null; progress?: JobProgress; onClose(): void
-  onSaved(settings: AppSettings): void; onDownload(): void
-}): JSX.Element {
-  const [settings, setSettings] = useState(initial)
-  const [modelOptions, setModelOptions] = useState<CliModelOption[]>([])
-  const [modelsLoading, setModelsLoading] = useState(true)
-  const [modelsError, setModelsError] = useState<string | null>(null)
-  const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]): void => setSettings((current) => ({ ...current, [key]: value }))
-  const modelKey: 'claudeModel' | 'codexModel' = settings.cleanupProvider === 'codex' ? 'codexModel' : 'claudeModel'
-  const configuredModel = settings[modelKey]
-
-  useEffect(() => {
-    let active = true
-    setModelsLoading(true)
-    setModelsError(null)
-    void window.api.models.list(settings.cleanupProvider)
-      .then((models) => { if (active) setModelOptions(models) })
-      .catch((error) => {
-        if (!active) return
-        setModelOptions([])
-        setModelsError(error instanceof Error ? error.message : String(error))
-      })
-      .finally(() => { if (active) setModelsLoading(false) })
-    return () => { active = false }
-  }, [settings.cleanupProvider])
-
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
-    <section className="modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-      <header><div><span className="eyebrow">Préférences</span><h2 id="settings-title">Réglages</h2></div><button className="icon-button" onClick={onClose}><Icon name="close"/><span className="sr-only">Fermer</span></button></header>
-      <div className="settings-grid">
-        <label><span>Transcription</span><select value={settings.sttProvider} onChange={(e) => update('sttProvider', e.target.value as AppSettings['sttProvider'])}><option value="local-whisper">Whisper local</option><option value="openai">OpenAI</option></select></label>
-        <label><span>Nettoyage</span><select value={settings.cleanupProvider} onChange={(e) => update('cleanupProvider', e.target.value as AppSettings['cleanupProvider'])}><option value="claude-code">Claude Code</option><option value="codex">Codex</option></select></label>
-        <label className="wide model-setting"><span>Modèle {settings.cleanupProvider === 'codex' ? 'Codex' : 'Claude Code'}</span><select value={configuredModel} onChange={(event) => update(modelKey, event.target.value)} disabled={modelsLoading}>
-          <option value="">Par défaut de la CLI</option>
-          {configuredModel && !modelOptions.some((model) => model.id === configuredModel) && <option value={configuredModel}>{configuredModel} · configuré</option>}
-          {modelOptions.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
-        </select><small>{modelsLoading ? 'Lecture des modèles de la CLI installée…' : modelsError ? `Catalogue indisponible : ${modelsError}` : `${modelOptions.length} modèle${modelOptions.length > 1 ? 's' : ''} détecté${modelOptions.length > 1 ? 's' : ''}. Ce choix s’applique au nettoyage et aux fiches.`}</small></label>
-        <label className="wide"><span>Clé API OpenAI</span><input type="password" value={settings.openaiApiKey} onChange={(e) => update('openaiApiKey', e.target.value)} placeholder="sk-…" /></label>
-        <label className="wide"><span>Dossier audio</span><input value={settings.audioStoragePath} onChange={(e) => update('audioStoragePath', e.target.value)} /></label>
-        <div className="settings-separator wide"><span>Notion</span></div>
-        <label className="wide"><span>Token d’intégration</span><input type="password" value={settings.notionToken} onChange={(e) => update('notionToken', e.target.value)} placeholder="secret_…" /></label>
-        <label><span>Type de parent</span><select value={settings.notionParentType} onChange={(e) => update('notionParentType', e.target.value as AppSettings['notionParentType'])}><option value="page_id">Page</option><option value="database_id">Base de données</option></select></label>
-        <label><span>ID du parent</span><input value={settings.notionParentId} onChange={(e) => update('notionParentId', e.target.value)} /></label>
-      </div>
-      <div className="engine-card">
-        <div><strong>Moteur Whisper local</strong><span>{assets?.binaryReady && assets.modelReady && assets.vadReady ? 'Binaire, modèle Q5 et VAD installés' : 'Téléchargement requis avant la première transcription locale'}</span></div>
-        <button className="secondary-button" onClick={onDownload} disabled={progress?.stage === 'download'}>{assets?.binaryReady && assets.modelReady ? 'Réinstaller' : 'Télécharger'}</button>
-        {progress?.stage === 'download' && <ProgressBar progress={progress}/>}
-      </div>
-      <footer><button className="text-button" onClick={onClose}>Annuler</button><button className="primary-button" onClick={() => onSaved(settings)}>Enregistrer</button></footer>
-    </section>
-  </div>
-}
-
-type DocumentView = DocumentVariant | 'source'
-
-function CourseDetail({ course, progress, onBack, onRename, onRetry, onProcess, onCleanup, onStudy, onDelete, onError }: {
-  course: Course; progress?: JobProgress; onBack(): void; onRename(title: string): Promise<void>; onRetry(): void; onProcess(): void; onCleanup(): void; onStudy(): void; onDelete(): void; onError(message: string): void
-}): JSX.Element {
-  const [view, setView] = useState<DocumentView>(course.studyMarkdown ? 'study' : 'course')
-  const [editingTitle, setEditingTitle] = useState(false)
-  const [titleDraft, setTitleDraft] = useState(course.title)
-  const busy = ['converting', 'transcribing', 'cleaning', 'studying'].includes(course.status)
-  const thinking = isThinkingStatus(course.status)
-  const awaiting = isAwaitingProcessing(course) && !busy
-  const content = view === 'source' ? course.rawTranscript : view === 'study' ? course.studyMarkdown : course.cleanTranscript
-  const variant: DocumentVariant = view === 'study' ? 'study' : 'course'
-
-  useEffect(() => {
-    setView(course.studyMarkdown ? 'study' : 'course')
-    setEditingTitle(false)
-    setTitleDraft(course.title)
-  }, [course.id])
-
-  useEffect(() => {
-    if (!editingTitle) setTitleDraft(course.title)
-  }, [course.title, editingTitle])
-
-  const copy = async (): Promise<void> => {
-    if (content) await navigator.clipboard.writeText(content)
-  }
-  const exportMd = async (): Promise<void> => {
-    try { await window.api.courses.exportMarkdown(course.id, variant) }
-    catch (e) { onError(e instanceof Error ? e.message : String(e)) }
-  }
-  const notion = async (): Promise<void> => {
-    try {
-      const result = await window.api.courses.sendToNotion(course.id, variant)
-      window.open(result.url, '_blank')
-    } catch (e) { onError(e instanceof Error ? e.message : String(e)) }
-  }
-  const generateStudy = (): void => {
-    setView('study')
-    onStudy()
-  }
-  const saveTitle = async (): Promise<void> => {
-    const nextTitle = titleDraft.replace(/\s+/g, ' ').trim()
-    if (!nextTitle) {
-      setTitleDraft(course.title)
-      setEditingTitle(false)
-      onError('Le titre ne peut pas être vide.')
-      return
-    }
-    if (nextTitle === course.title) {
-      setEditingTitle(false)
-      return
-    }
-    try {
-      await onRename(nextTitle)
-      setEditingTitle(false)
-    } catch (error) {
-      onError(error instanceof Error ? error.message : String(error))
-    }
-  }
-
-  const emptyTitle = course.status === 'studying' && view === 'study'
-    ? 'Création de la fiche en cours'
-    : busy
-      ? 'Traitement du cours en cours'
-      : view === 'study'
-        ? 'Aucune fiche de révision'
-        : awaiting
-          ? 'Transcription pas encore lancée'
-          : 'Le cours complet n’est pas encore disponible'
-  const emptyMessage = busy
-    ? 'Vous pouvez quitter cet écran : le traitement continue en arrière-plan.'
-    : view === 'study'
-      ? 'Générez une fiche structurée pour réviser les notions, références et exceptions essentielles.'
-      : awaiting
-        ? 'L’enregistrement est sauvegardé. Lancez la transcription puis le nettoyage quand vous le souhaitez.'
-        : course.rawTranscript
-          ? 'Le son et la transcription source sont conservés. Vous pouvez relancer le nettoyage.'
-          : 'Relancez le traitement depuis le fichier audio conservé.'
-
-  return <main className="detail">
-    <header className="detail-header">
-      <div className="detail-heading">
-        <button className="back-button" onClick={onBack}><Icon name="back"/>Tous les cours</button>
-        <div className="detail-title">
-          <span className="eyebrow">{courseMeta(course)}</span>
-          {editingTitle
-            ? <form className="title-editor" onSubmit={(event) => { event.preventDefault(); void saveTitle() }}>
-                <input
-                  autoFocus
-                  aria-label="Titre du cours"
-                  value={titleDraft}
-                  maxLength={200}
-                  onChange={(event) => setTitleDraft(event.target.value)}
-                  onBlur={() => void saveTitle()}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Escape') {
-                      setTitleDraft(course.title)
-                      setEditingTitle(false)
-                    }
-                  }}
-                />
-              </form>
-            : <div className="title-line"><h1>{course.title}</h1><button className="rename-button" onClick={() => setEditingTitle(true)} disabled={busy} title="Renommer le cours"><Icon name="edit" size={16}/><span className="sr-only">Renommer le cours</span></button></div>}
-        </div>
-      </div>
-      <button className="icon-button danger" onClick={onDelete} disabled={busy}><Icon name="trash"/><span className="sr-only">Supprimer</span></button>
-    </header>
-    {progress && busy && <ProgressBar progress={progress} thinking={thinking}/>}
-    {awaiting && <div className="pending-card"><div><strong>Ce cours attend d’être transcrit.</strong><p>Vous aviez choisi de traiter cet enregistrement plus tard. L’audio est conservé tel quel.</p></div><button className="primary-button" onClick={onProcess}><Icon name="sparkles"/>Transcrire et nettoyer</button></div>}
-    {course.status === 'error' && <div className="error-card"><div><strong>Le traitement s’est arrêté pendant « {course.errorStage} ».</strong><p>{course.errorMessage}</p><small>L’audio source et les documents déjà produits sont conservés.</small></div><button className="secondary-button" onClick={onRetry}><Icon name="retry"/>Réessayer</button></div>}
-    <div className="transcript-toolbar">
-      <div className="tabs" role="tablist" aria-label="Documents du cours">
-        {course.studyMarkdown && <button role="tab" aria-selected={view === 'study'} className={view === 'study' ? 'active' : ''} onClick={() => setView('study')}>Fiche de révision</button>}
-        <button role="tab" aria-selected={view === 'course'} className={view === 'course' ? 'active' : ''} onClick={() => setView('course')}>Cours complet</button>
-        {!course.studyMarkdown && (course.status === 'studying' || course.errorStage === 'study') && <button role="tab" aria-selected={view === 'study'} className={view === 'study' ? 'active' : ''} onClick={() => setView('study')}>Fiche de révision</button>}
-        {view === 'source' && <button role="tab" aria-selected className="active technical-tab">Source technique</button>}
-      </div>
-      <div className="actions">
-        {course.cleanTranscript && view !== 'source' && <button className="study-button" onClick={generateStudy} disabled={busy}><Icon name="sparkles"/>{course.studyMarkdown ? 'Regénérer la fiche' : 'Créer une fiche de révision'}</button>}
-        <button onClick={() => void copy()} disabled={!content}><Icon name="copy"/>Copier</button>
-        {view !== 'source' && <button onClick={() => void exportMd()} disabled={!content}><Icon name="export"/>Exporter .md</button>}
-        {view !== 'source' && <button onClick={() => void notion()} disabled={!content}><Icon name="notion"/>Envoyer vers Notion</button>}
-        <details className="source-menu">
-          <summary aria-label="Options techniques"><Icon name="more"/><span className="sr-only">Options techniques</span></summary>
-          <div>
-            {course.rawTranscript && <button onClick={() => setView('source')}>Voir la source technique</button>}
-            <button onClick={onRetry} disabled={busy}><Icon name="retry"/>Retranscrire depuis l’audio</button>
-            <button onClick={onCleanup} disabled={busy || !course.rawTranscript}><Icon name="sparkles"/>Nettoyer à nouveau</button>
-          </div>
-        </details>
-      </div>
-    </div>
-    <article className={`transcript ${view === 'source' ? 'raw' : 'markdown'} ${view === 'study' ? 'study' : ''}`}>
-      {content
-        ? view === 'source'
-          ? <pre>{content}</pre>
-          : <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
-        : <div className={`empty-transcript ${thinking ? 'is-thinking' : ''}`}>{thinking
-          ? <ThinkingOrb state="connecting" size={64} theme="dark" aria-label={thinkingStatusLabel[course.status]}/>
-          : <Icon name="sparkles" size={28}/>}<h3>{emptyTitle}</h3><p>{emptyMessage}</p>{view === 'study' && course.cleanTranscript && !busy && <button className="primary-button" onClick={generateStudy}>Créer la fiche de révision</button>}{view === 'course' && course.rawTranscript && !busy && <button className="secondary-button" onClick={onCleanup}>Nettoyer à nouveau</button>}{view === 'course' && awaiting && <button className="primary-button" onClick={onProcess}>Transcrire et nettoyer</button>}</div>}
-    </article>
-  </main>
+function routeKey(route: Route): string {
+  return route.kind === 'subject' ? `s:${route.subject}` : route.kind === 'folder' ? `f:${route.folderId}` : route.kind === 'course' ? `c:${route.courseId}` : 'home'
 }
 
 export function App(): JSX.Element {
   const [courses, setCourses] = useState<Course[]>([])
-  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [folders, setFolders] = useState<CourseFolder[]>([])
+  const [loaded, setLoaded] = useState(false)
   const [progress, setProgress] = useState<Record<string, JobProgress>>({})
   const [globalProgress, setGlobalProgress] = useState<JobProgress | undefined>()
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [assets, setAssets] = useState<AssetStatus | null>(null)
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [query, setQuery] = useState('')
-  const [subjectFilter, setSubjectFilter] = useState('')
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const [quickStart, setQuickStart] = useState<Partial<CoursePlacement> | null>(null)
+  const [notice, setNotice] = useState<Notice | null>(null)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
+  const selectionAnchor = useRef<string | null>(null)
+  const [clipboard, setClipboard] = useState<LibraryView['clipboard']>(null)
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; items: ContextMenuItem[] } | null>(null)
+  const [moveTargets, setMoveTargets] = useState<string[] | null>(null)
+  // Matières créées à la main qui n'ont encore ni cours ni dossier (non persistées).
+  const [draftSubjects, setDraftSubjects] = useState<string[]>([])
+  const nav = useNavigation()
+  const { route, navigate, replace } = nav
+  const routeRef = useRef(route)
+  routeRef.current = route
 
-  const load = useCallback(async () => {
-    const [courseValues, settingValues, assetValues] = await Promise.all([window.api.courses.list(), window.api.settings.get(), window.api.assets.status()])
-    setCourses(courseValues); setSettings(settingValues); setAssets(assetValues)
+  const reportError = useCallback((message: string) => setNotice({ tone: 'error', message }), [])
+  const failed = (error: unknown): false => { reportError(errorMessage(error)); return false }
+  const baseRecorder = useRecorder(reportError)
+  const recordingRef = useRef(false)
+  recordingRef.current = Boolean(baseRecorder.course)
+
+  const loadLibrary = useCallback(async () => {
+    const [courseValues, folderValues] = await Promise.all([window.api.courses.list(), window.api.folders.list()])
+    setCourses(courseValues); setFolders(folderValues)
   }, [])
 
   useEffect(() => {
-    void load().catch((e) => setError(e instanceof Error ? e.message : String(e)))
+    void Promise.all([loadLibrary(), window.api.settings.get().then(setSettings), window.api.assets.status().then(setAssets), window.api.updates.status().then(setUpdateStatus)])
+      .catch((error) => reportError(errorMessage(error)))
+      .finally(() => setLoaded(true))
     const offProgress = window.api.events.onProgress((value) => {
       if (value.courseId) setProgress((current) => ({ ...current, [value.courseId!]: value }))
       else setGlobalProgress(value)
@@ -505,78 +71,363 @@ export function App(): JSX.Element {
       return (exists ? current.map((value) => value.id === course.id ? course : value) : [course, ...current])
         .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
     }))
-    return () => { offProgress(); offCourse() }
-  }, [load])
-
-  const selected = useMemo(() => courses.find((course) => course.id === selectedId) || null, [courses, selectedId])
-  const subjects = useMemo(() => [...new Set(courses.map((course) => course.subject).filter(Boolean))], [courses])
-  const subjectOptions = useMemo(() => listSubjects(courses), [courses])
-  const visibleCourses = useMemo(() => filterCourses(courses, { query, subject: subjectFilter }), [courses, query, subjectFilter])
-  const filtering = Boolean(query.trim() || subjectFilter)
+    const offUpdate = window.api.events.onUpdateStatus(setUpdateStatus)
+    return () => { offProgress(); offCourse(); offUpdate() }
+  }, [loadLibrary, reportError])
 
   useEffect(() => {
-    if (subjectFilter && !subjectOptions.includes(subjectFilter)) setSubjectFilter('')
-  }, [subjectFilter, subjectOptions])
+    if (updateStatus?.phase === 'available') setNotice({ tone: 'info', message: `La version ${updateStatus.version} est disponible.`, actions: [{ label: 'Télécharger', run: () => { void window.api.updates.download().then((status) => { if (status.phase === 'error') reportError(status.message ?? 'Le téléchargement a échoué.') }).catch(failed) } }] })
+    if (updateStatus?.phase === 'downloaded') setNotice({ tone: 'info', message: `La version ${updateStatus.version} est prête à installer.`, actions: [{ label: 'Redémarrer', run: () => { if (recordingRef.current) reportError('Terminez l’enregistrement avant de redémarrer.'); else void window.api.updates.install().catch(failed) } }] })
+  }, [updateStatus?.phase, updateStatus?.version])
+
+  const tree = useMemo(() => buildLibraryTree(courses, folders, draftSubjects), [courses, folders, draftSubjects])
+  const lib = useMemo<LibraryView>(() => {
+    const subjects = tree.map((node) => node.subject).filter(Boolean)
+    return {
+      courses, folders, tree, subjects, progress, selectedIds, clipboard,
+      recentSubjects: subjectsByRecentUse(courses, subjects),
+      folderById: new Map(folders.map((folder) => [folder.id, folder]))
+    }
+  }, [courses, folders, tree, progress, selectedIds, clipboard])
+
+  // La sélection appartient à la page affichée : changer de page la vide.
+  useEffect(() => { setSelectedIds(new Set()); selectionAnchor.current = null }, [route])
+  // Un cours supprimé ne reste ni sélectionné ni dans le presse-papiers.
+  useEffect(() => {
+    const known = new Set(courses.map((course) => course.id))
+    setSelectedIds((current) => [...current].every((id) => known.has(id)) ? current : new Set([...current].filter((id) => known.has(id))))
+    setClipboard((current) => {
+      if (!current || current.courseIds.every((id) => known.has(id))) return current
+      const courseIds = current.courseIds.filter((id) => known.has(id))
+      return courseIds.length ? { ...current, courseIds } : null
+    })
+  }, [courses])
+
+  const currentCourse = route.kind === 'course' ? courses.find((course) => course.id === route.courseId) : undefined
+  const currentFolder = route.kind === 'folder' ? lib.folderById.get(route.folderId) : undefined
+
+  // Une page dont l'objet a disparu (cours supprimé, dossier retiré, matière renommée) renvoie à l'accueil.
+  useEffect(() => {
+    if (!loaded) return
+    const stale = (route.kind === 'course' && !currentCourse)
+      || (route.kind === 'folder' && !currentFolder)
+      || (route.kind === 'subject' && !tree.some((node) => node.subject === route.subject))
+    if (stale) replace({ kind: 'home' })
+  }, [loaded, route, currentCourse, currentFolder, tree, replace])
+
+  const contextPlacement = (): Partial<CoursePlacement> => {
+    if (route.kind === 'subject' && route.subject) return { subject: route.subject, folderId: null }
+    if (currentFolder) return { subject: currentFolder.subject, folderId: currentFolder.id }
+    if (currentCourse?.subject) return { subject: currentCourse.subject, folderId: currentCourse.folderId }
+    return {}
+  }
+
+  // Un cours terminé depuis une autre page propose tout de suite la suite, sans y retourner.
+  const recorder: Recorder = {
+    ...baseRecorder,
+    stop: async () => {
+      const course = await baseRecorder.stop()
+      const current = routeRef.current
+      if (course && !(current.kind === 'course' && current.courseId === course.id)) {
+        setNotice({
+          tone: 'info', message: `« ${course.title} » est enregistré.`,
+          actions: [
+            { label: 'Transcrire maintenant', run: () => void window.api.courses.startProcessing(course.id).catch(failed) },
+            { label: 'Ouvrir', run: () => navigate({ kind: 'course', courseId: course.id }) }
+          ]
+        })
+      }
+      return course
+    }
+  }
+
+  const openQuickStart = (placement: Partial<CoursePlacement> = contextPlacement()): void => {
+    if (baseRecorder.course) navigate({ kind: 'course', courseId: baseRecorder.course.id })
+    else setQuickStart(placement)
+  }
   const importAudio = async (): Promise<void> => {
-    try { const course = await window.api.courses.importAudio(); if (course) setSelectedId(course.id) }
-    catch (e) { setError(e instanceof Error ? e.message : String(e)) }
+    try { const course = await window.api.courses.importAudio(); if (course) navigate({ kind: 'course', courseId: course.id }) }
+    catch (error) { failed(error) }
   }
-  const remove = async (course: Course): Promise<void> => {
-    if (!window.confirm(`Supprimer « ${course.title} » ? Les fichiers audio seront placés dans la corbeille.`)) return
-    try { await window.api.courses.remove(course.id); setCourses((current) => current.filter((value) => value.id !== course.id)); setSelectedId(null) }
-    catch (e) { setError(e instanceof Error ? e.message : String(e)) }
+
+  const placementLabel = (placement: CoursePlacement): string => {
+    const folder = placement.folderId ? lib.folderById.get(placement.folderId) : undefined
+    return folder ? `${placement.subject} › ${folder.name}` : placement.subject
   }
+  const movable = (ids: string[]): Course[] => ids.map((id) => courses.find((course) => course.id === id)).filter((course): course is Course => Boolean(course && course.status !== 'recording'))
+
+  // Déplacer range les cours ailleurs ; « Annuler » les remet exactement où ils étaient.
+  const moveCourses = (ids: string[], placement: CoursePlacement): void => {
+    const toMove = movable(ids).filter((course) => course.subject !== placement.subject || course.folderId !== placement.folderId)
+    if (!toMove.length) return
+    const previous = toMove.map((course) => ({ id: course.id, placement: { subject: course.subject, folderId: course.folderId } }))
+    void Promise.all(toMove.map((course) => window.api.courses.move(course.id, placement))).then(() => {
+      setSelectedIds(new Set())
+      setNotice({
+        tone: 'info', message: `${plural(toMove.length, 'cours', 'cours')} déplacé${toMove.length > 1 ? 's' : ''} vers ${placementLabel(placement)}.`,
+        actions: [{ label: 'Annuler', run: () => void Promise.all(previous.map((entry) => window.api.courses.move(entry.id, entry.placement))).catch(failed) }]
+      })
+    }).catch(failed)
+  }
+  const copyCourses = async (ids: string[], placement: CoursePlacement): Promise<void> => {
+    const toCopy = movable(ids)
+    let copied = 0
+    try {
+      for (const course of toCopy) { await window.api.courses.duplicate(course.id, placement); copied++ }
+      setNotice({ tone: 'info', message: `${plural(copied, 'cours copié', 'cours copiés')} dans ${placementLabel(placement)}.` })
+    } catch (error) {
+      failed(error)
+    }
+  }
+  const toClipboard = (mode: 'cut' | 'copy', ids: string[]): void => {
+    const courseIds = movable(ids).map((course) => course.id)
+    if (!courseIds.length) return
+    setClipboard({ mode, courseIds })
+    setNotice({ tone: 'info', message: `${plural(courseIds.length, 'cours', 'cours')} ${mode === 'cut' ? 'coupé' : 'copié'}${courseIds.length > 1 ? 's' : ''}. Ouvrez une matière ou un dossier puis ${MOD_KEY} V pour ${mode === 'cut' ? 'les déplacer' : 'coller'}.` })
+  }
+  const paste = (placement: CoursePlacement): void => {
+    if (!clipboard) return
+    if (clipboard.mode === 'cut') { moveCourses(clipboard.courseIds, placement); setClipboard(null) }
+    else void copyCourses(clipboard.courseIds, placement)
+  }
+  const deleteCourses = (targets: Course[]): void => {
+    const deletable = targets.filter((course) => course.status !== 'recording')
+    if (!deletable.length) return
+    const label = deletable.length === 1 ? `« ${deletable[0].title} »` : `ces ${deletable.length} cours`
+    if (!window.confirm(`Supprimer ${label} ? L’audio sera placé dans la corbeille.`)) return
+    void (async () => {
+      for (const course of deletable) {
+        try { await window.api.courses.remove(course.id); setCourses((current) => current.filter((value) => value.id !== course.id)) }
+        catch (error) { failed(error) }
+      }
+    })()
+  }
+  // Ce sur quoi agissent ⌘X / ⌘C : la sélection, sinon la ligne qui a le focus, sinon le cours ouvert.
+  const shortcutTargets = (): string[] => {
+    if (selectedIds.size) return [...selectedIds]
+    const focused = (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('[data-course-id]')?.dataset.courseId
+    if (focused) return [focused]
+    return currentCourse ? [currentCourse.id] : []
+  }
+  const pastePlacement = (): CoursePlacement | null => {
+    if (route.kind === 'subject' && route.subject) return { subject: route.subject, folderId: null }
+    if (currentFolder) return { subject: currentFolder.subject, folderId: currentFolder.id }
+    if (currentCourse?.subject) return { subject: currentCourse.subject, folderId: currentCourse.folderId }
+    return null
+  }
+  const openMenu = (event: ReactMouseEvent, items: ContextMenuItem[]): void => {
+    event.preventDefault()
+    event.stopPropagation()
+    setContextMenu({ x: event.clientX, y: event.clientY, items })
+  }
+  const pasteItem = (placement: CoursePlacement): ContextMenuItem => ({
+    label: clipboard ? `${clipboard.mode === 'cut' ? 'Déplacer' : 'Coller'} ${plural(clipboard.courseIds.length, 'cours', 'cours')} ici` : 'Coller ici',
+    icon: 'paste', shortcut: `${MOD_KEY} V`, disabled: !clipboard, run: () => paste(placement)
+  })
+
+  const actions: LibraryActions = {
+    navigate,
+    moveCourses,
+    paste,
+    clickCourse: (course, event, list) => {
+      if (event.metaKey || event.ctrlKey) {
+        setSelectedIds((current) => { const next = new Set(current); if (!next.delete(course.id)) next.add(course.id); return next })
+        selectionAnchor.current = course.id
+        return
+      }
+      if (event.shiftKey) {
+        const anchor = list.findIndex((value) => value.id === (selectionAnchor.current ?? course.id))
+        const index = list.findIndex((value) => value.id === course.id)
+        const [from, to] = anchor < 0 ? [index, index] : [Math.min(anchor, index), Math.max(anchor, index)]
+        setSelectedIds(new Set(list.slice(from, to + 1).map((value) => value.id)))
+        return
+      }
+      navigate({ kind: 'course', courseId: course.id })
+    },
+    courseMenu: (course, event) => {
+      const targets = selectedIds.has(course.id) ? [...selectedIds] : [course.id]
+      const single = targets.length === 1
+      const targetCourses = targets.map((id) => courses.find((value) => value.id === id)).filter((value): value is Course => Boolean(value))
+      openMenu(event, [
+        ...(single ? [{ label: 'Ouvrir', icon: 'page' as const, run: () => navigate({ kind: 'course', courseId: course.id }) }, 'separator' as const] : []),
+        { label: single ? 'Couper' : `Couper ${targets.length} cours`, icon: 'cut', shortcut: `${MOD_KEY} X`, run: () => toClipboard('cut', targets) },
+        { label: single ? 'Copier' : `Copier ${targets.length} cours`, icon: 'copy', shortcut: `${MOD_KEY} C`, run: () => toClipboard('copy', targets) },
+        { label: 'Déplacer vers…', icon: 'move', run: () => setMoveTargets(targets) },
+        'separator',
+        { label: single ? 'Supprimer' : `Supprimer ${targets.length} cours`, icon: 'trash', danger: true, run: () => deleteCourses(targetCourses) }
+      ])
+    },
+    placeMenu: (placement, event) => openMenu(event, [
+      pasteItem(placement),
+      { label: 'Nouveau cours ici', icon: 'mic', disabled: Boolean(baseRecorder.course), run: () => openQuickStart(placement) }
+    ]),
+    openQuickStart,
+    reportError,
+    startRecording: (metadata: RecordingMetadata) => {
+      void baseRecorder.start(metadata).then((course) => {
+        if (!course) return
+        setQuickStart(null)
+        navigate({ kind: 'course', courseId: course.id })
+      })
+    },
+    moveCourse: (id, placement) => moveCourses([id], placement),
+    renameCourse: async (id, title) => {
+      try { await window.api.courses.rename(id, title); return true } catch (error) { return failed(error) }
+    },
+    deleteCourse: (course) => deleteCourses([course]),
+    processCourse: (id) => { void window.api.courses.startProcessing(id).catch(failed) },
+    retryCourse: (id) => { void window.api.courses.retry(id).catch(failed) },
+    cleanupCourse: (id) => { void window.api.courses.rerunCleanup(id).catch(failed) },
+    studyCourse: (id) => { void window.api.courses.generateStudyGuide(id).catch(failed) },
+    createSubject: async (name) => {
+      try {
+        const subject = normalizeSubject(name)
+        const existing = lib.subjects.find((value) => value.localeCompare(subject, 'fr', { sensitivity: 'accent' }) === 0)
+        if (!existing) setDraftSubjects((current) => [...current, subject])
+        navigate({ kind: 'subject', subject: existing ?? subject })
+        return true
+      } catch (error) { return failed(error) }
+    },
+    renameSubject: async (from, to) => {
+      try {
+        const subject = normalizeSubject(to)
+        const persisted = courses.some((course) => course.subject === from) || folders.some((folder) => folder.subject === from)
+        if (persisted) await window.api.subjects.rename(from, subject)
+        setDraftSubjects((current) => current.map((value) => value === from ? subject : value))
+        if (persisted) await loadLibrary()
+        if (routeRef.current.kind === 'subject') replace({ kind: 'subject', subject })
+        return true
+      } catch (error) { return failed(error) }
+    },
+    createFolder: async (subject, name) => {
+      try { const folder = await window.api.folders.create(subject, name); setFolders((current) => [...current, folder]); return true }
+      catch (error) { return failed(error) }
+    },
+    renameFolder: async (folder, name) => {
+      try { const renamed = await window.api.folders.rename(folder.id, name); setFolders((current) => current.map((value) => value.id === renamed.id ? renamed : value)); return true }
+      catch (error) { return failed(error) }
+    },
+    deleteFolder: (folder) => {
+      const count = courses.filter((course) => course.folderId === folder.id).length
+      const contents = count ? ` Ses ${count} cours reviendront directement dans « ${folder.subject} ».` : ''
+      if (!window.confirm(`Supprimer le dossier « ${folder.name} » ?${contents}`)) return
+      void window.api.folders.remove(folder.id).then(() => {
+        setFolders((current) => current.filter((value) => value.id !== folder.id))
+        setCourses((current) => current.map((course) => course.folderId === folder.id ? { ...course, folderId: null } : course))
+        if (routeRef.current.kind === 'folder' && routeRef.current.folderId === folder.id) replace({ kind: 'subject', subject: folder.subject })
+      }).catch(failed)
+    }
+  }
+
+  // Raccourcis : ⌘K rechercher, ⌘N nouveau cours, ⌘[ / ⌘] naviguer. L'éditeur de notes garde les siens.
+  const editing = (target: EventTarget | null): boolean => {
+    return target instanceof Element && Boolean(target.closest('input, textarea, select, [contenteditable="true"]'))
+  }
+  const hasTextSelection = (): boolean => Boolean(window.getSelection()?.toString())
+  const clipboardShortcut = (key: 'x' | 'c' | 'v', event: KeyboardEvent): boolean => {
+    if (editing(event.target) || (key !== 'v' && hasTextSelection())) return false
+    if (key === 'v') {
+      if (!clipboard) return false
+      const placement = pastePlacement()
+      if (placement) paste(placement)
+      else setNotice({ tone: 'info', message: 'Ouvrez une matière ou un dossier pour y coller les cours.' })
+      return true
+    }
+    const targets = shortcutTargets()
+    if (!targets.length) return false
+    toClipboard(key === 'x' ? 'cut' : 'copy', targets)
+    return true
+  }
+  const shortcuts = useRef({ openQuickStart, back: nav.back, forward: nav.forward, clipboardShortcut, clearSelection: () => setSelectedIds(new Set()), hasSelection: selectedIds.size > 0 })
+  shortcuts.current = { openQuickStart, back: nav.back, forward: nav.forward, clipboardShortcut, clearSelection: () => setSelectedIds(new Set()), hasSelection: selectedIds.size > 0 }
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented) return
+      const mod = event.metaKey || event.ctrlKey
+      const key = event.key.toLowerCase()
+      if (mod && key === 'k') { event.preventDefault(); setPaletteOpen((open) => !open) }
+      else if (mod && key === 'n') { event.preventDefault(); shortcuts.current.openQuickStart() }
+      else if ((mod && key === '[') || (event.altKey && key === 'arrowleft')) { event.preventDefault(); shortcuts.current.back() }
+      else if ((mod && key === ']') || (event.altKey && key === 'arrowright')) { event.preventDefault(); shortcuts.current.forward() }
+      else if (mod && !event.shiftKey && !event.altKey && (key === 'x' || key === 'c' || key === 'v')) { if (shortcuts.current.clipboardShortcut(key, event)) event.preventDefault() }
+      else if (key === 'escape' && shortcuts.current.hasSelection) shortcuts.current.clearSelection()
+    }
+    const onMouse = (event: MouseEvent): void => {
+      if (event.button === 3) shortcuts.current.back()
+      if (event.button === 4) shortcuts.current.forward()
+    }
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('mouseup', onMouse)
+    return () => { window.removeEventListener('keydown', onKey); window.removeEventListener('mouseup', onMouse) }
+  }, [])
+
+  useEffect(() => {
+    if (notice?.tone !== 'info') return
+    const timer = window.setTimeout(() => setNotice((current) => current === notice ? null : current), 12_000)
+    return () => window.clearTimeout(timer)
+  }, [notice])
+
+  const crumbs: Array<{ label: string; route?: Route; icon?: 'book' | 'folder' | 'page' }> = []
+  const crumbSubject = route.kind === 'subject' ? route.subject : currentFolder?.subject ?? currentCourse?.subject
+  const crumbFolder = currentFolder ?? (currentCourse?.folderId ? lib.folderById.get(currentCourse.folderId) : undefined)
+  if (route.kind !== 'home' && crumbSubject !== undefined) crumbs.push({ label: crumbSubject || 'Sans matière', route: { kind: 'subject', subject: crumbSubject }, icon: 'book' })
+  if (crumbFolder) crumbs.push({ label: crumbFolder.name, route: { kind: 'folder', folderId: crumbFolder.id }, icon: 'folder' })
+  if (currentCourse) crumbs.push({ label: currentCourse.title, icon: 'page' })
+
+  const page = route.kind === 'home'
+    ? <HomePage lib={lib} recorder={recorder} actions={actions}/>
+    : route.kind === 'course'
+      ? currentCourse ? <CoursePage course={currentCourse} lib={lib} recorder={recorder} actions={actions}/> : null
+      : <LocationPage scope={route} lib={lib} actions={actions}/>
+
   const saveSettings = async (values: AppSettings): Promise<void> => {
-    try { const saved = await window.api.settings.save(values); setSettings(saved); setSettingsOpen(false) }
-    catch (e) { setError(e instanceof Error ? e.message : String(e)) }
+    try { setSettings(await window.api.settings.save(values)); setSettingsOpen(false) } catch (error) { failed(error) }
   }
   const download = async (): Promise<void> => {
-    try { await window.api.assets.downloadWhisper(); setAssets(await window.api.assets.status()) }
-    catch (e) { setError(e instanceof Error ? e.message : String(e)) }
+    try { await window.api.assets.downloadWhisper(); setAssets(await window.api.assets.status()) } catch (error) { failed(error) }
   }
+  const checkUpdate = async (): Promise<void> => { try { const status = await window.api.updates.check(); if (status.phase === 'error') reportError(status.message ?? 'La vérification a échoué.') } catch (error) { failed(error) } }
+  const downloadUpdate = async (): Promise<void> => { try { const status = await window.api.updates.download(); if (status.phase === 'error') reportError(status.message ?? 'Le téléchargement a échoué.') } catch (error) { failed(error) } }
+  const installUpdate = async (): Promise<void> => { try { await window.api.updates.install() } catch (error) { failed(error) } }
 
-  if (selected) return <div className="app-shell">
-    <div className="titlebar"><img className="brand-mark" src={logoUrl} alt="" width={19} height={19}/><span>FAC Transcript</span></div>
-    <CourseDetail
-      course={selected}
-      progress={progress[selected.id]}
-      onBack={() => setSelectedId(null)}
-      onRename={(title) => window.api.courses.rename(selected.id, title).then(() => undefined)}
-      onRetry={() => void window.api.courses.retry(selected.id).catch((e) => setError(e instanceof Error ? e.message : String(e)))}
-      onProcess={() => void window.api.courses.startProcessing(selected.id).catch((e) => setError(e instanceof Error ? e.message : String(e)))}
-      onCleanup={() => void window.api.courses.rerunCleanup(selected.id).catch((e) => setError(e instanceof Error ? e.message : String(e)))}
-      onStudy={() => void window.api.courses.generateStudyGuide(selected.id).catch((e) => setError(e instanceof Error ? e.message : String(e)))}
-      onDelete={() => void remove(selected)}
-      onError={setError}
-    />
-    {error && <div className="toast" role="alert"><span>{error}</span><button onClick={() => setError(null)}><Icon name="close"/></button></div>}
-  </div>
-
-  return <div className="app-shell">
-    <div className="titlebar"><img className="brand-mark" src={logoUrl} alt="" width={19} height={19}/><span>FAC Transcript</span></div>
-    <main className="home">
-      <header className="home-header"><div><span className="eyebrow">Bibliothèque personnelle</span><h1>Vos cours, mot pour mot.</h1></div><div className="header-actions"><button className="secondary-button" onClick={() => void importAudio()}><Icon name="import"/>Importer un audio</button><button className="icon-button" onClick={() => setSettingsOpen(true)}><Icon name="settings"/><span className="sr-only">Réglages</span></button></div></header>
-      <Recorder subjects={subjects} onFinished={(id, processingStarted) => { if (processingStarted) setSelectedId(id) }} onError={setError}/>
-      <section className="library">
-        <div className="section-heading">
-          <h2>Enregistrements</h2>
-          <div className="library-tools">
-            <label className="search-field"><Icon name="search" size={15}/><input type="search" value={query} placeholder="Rechercher un cours" aria-label="Rechercher un cours" onChange={(event) => setQuery(event.target.value)}/></label>
-            {subjectOptions.length > 0 && <select className="subject-filter" value={subjectFilter} aria-label="Trier par matière" onChange={(event) => setSubjectFilter(event.target.value)}>
-              <option value="">Toutes les matières</option>
-              {subjectOptions.map((value) => <option key={value} value={value}>{value}</option>)}
-            </select>}
-            <span>{filtering ? `${visibleCourses.length} sur ${courses.length}` : `${courses.length} cours`}</span>
-          </div>
+  return <div className="app">
+    <Sidebar lib={lib} route={route} recorder={recorder} actions={actions} onSearch={() => setPaletteOpen(true)} onImport={() => void importAudio()} onSettings={() => setSettingsOpen(true)}/>
+    <div className="main">
+      <header className="topbar">
+        <div className="topbar-nav">
+          <button className="icon-button" onClick={nav.back} disabled={!nav.canGoBack} title="Retour"><Icon name="back"/><span className="sr-only">Retour</span></button>
+          <button className="icon-button" onClick={nav.forward} disabled={!nav.canGoForward} title="Suivant"><Icon name="forward"/><span className="sr-only">Suivant</span></button>
         </div>
-        {!courses.length
-          ? <div className="empty-list"><span className="empty-line"/><p>Votre prochain cours apparaîtra ici.<br/>Nommez-le, indiquez la matière, puis lancez l’enregistrement.</p></div>
-          : visibleCourses.length
-            ? <div className="course-list">{visibleCourses.map((course) => <CourseRow key={course.id} course={course} selected={false} progress={progress[course.id]} onClick={() => setSelectedId(course.id)}/>)}</div>
-            : <div className="empty-list"><span className="empty-line"/><p>Aucun cours ne correspond à cette recherche.</p><button className="secondary-button" onClick={() => { setQuery(''); setSubjectFilter('') }}>Réinitialiser</button></div>}
-      </section>
-    </main>
-    {settingsOpen && settings && <SettingsModal initial={settings} assets={assets} progress={globalProgress} onClose={() => setSettingsOpen(false)} onSaved={(value) => void saveSettings(value)} onDownload={() => void download()}/>}
-    {error && <div className="toast" role="alert"><span>{error}</span><button onClick={() => setError(null)}><Icon name="close"/></button></div>}
+        <nav className="breadcrumb" aria-label="Emplacement">
+          <button className={`crumb ${route.kind === 'home' ? 'current' : ''}`} onClick={() => navigate({ kind: 'home' })}><Icon name="home" size={14}/>{route.kind === 'home' && <span>Accueil</span>}</button>
+          {crumbs.map((crumb, index) => <span key={index} className="crumb-part">
+            <span className="crumb-sep">/</span>
+            {crumb.route && !sameRoute(crumb.route, route)
+              ? <button className="crumb" onClick={() => navigate(crumb.route!)}>{crumb.icon && <Icon name={crumb.icon} size={14}/>}<span>{crumb.label}</span></button>
+              : <span className="crumb current">{crumb.icon && <Icon name={crumb.icon} size={14}/>}<span>{crumb.label}</span></span>}
+          </span>)}
+        </nav>
+      </header>
+      <div className="content" key={routeKey(route)}>{page}</div>
+    </div>
+
+    {selectedIds.size > 0 && <div className="selection-bar" role="toolbar" aria-label="Cours sélectionnés">
+      <span>{plural(selectedIds.size, 'cours sélectionné', 'cours sélectionnés')}</span>
+      <button onClick={() => toClipboard('cut', [...selectedIds])} title={`${MOD_KEY} X`}><Icon name="cut" size={14}/>Couper</button>
+      <button onClick={() => toClipboard('copy', [...selectedIds])} title={`${MOD_KEY} C`}><Icon name="copy" size={14}/>Copier</button>
+      <button onClick={() => setMoveTargets([...selectedIds])}><Icon name="move" size={14}/>Déplacer vers…</button>
+      <button className="danger" onClick={() => deleteCourses([...selectedIds].map((id) => courses.find((course) => course.id === id)).filter((course): course is Course => Boolean(course)))}><Icon name="trash" size={14}/></button>
+      <button className="close" onClick={() => setSelectedIds(new Set())} title="Échap"><Icon name="close" size={14}/><span className="sr-only">Désélectionner</span></button>
+    </div>}
+    {contextMenu && <ContextMenu x={contextMenu.x} y={contextMenu.y} items={contextMenu.items} onClose={() => setContextMenu(null)}/>}
+    {moveTargets && <MoveDialog lib={lib} count={moveTargets.length} onClose={() => setMoveTargets(null)} onChoose={(placement) => { const ids = moveTargets; setMoveTargets(null); moveCourses(ids, placement) }}/>}
+    {quickStart && <QuickStartModal lib={lib} placement={quickStart} starting={baseRecorder.state === 'starting'} onStart={actions.startRecording} onClose={() => setQuickStart(null)}/>}
+    {paletteOpen && <CommandPalette lib={lib} canRecord={!baseRecorder.course} onNavigate={navigate} onNewCourse={() => openQuickStart()} onImport={() => void importAudio()} onSettings={() => setSettingsOpen(true)} onClose={() => setPaletteOpen(false)}/>}
+    {settingsOpen && settings && <SettingsModal initial={settings} assets={assets} progress={globalProgress} updateStatus={updateStatus} recording={Boolean(baseRecorder.course)} onClose={() => setSettingsOpen(false)} onSaved={(value) => void saveSettings(value)} onDownload={() => void download()} onCheckUpdate={() => void checkUpdate()} onDownloadUpdate={() => void downloadUpdate()} onInstallUpdate={() => void installUpdate()}/>}
+    {notice && <div className={`toast ${notice.tone}`} role={notice.tone === 'error' ? 'alert' : 'status'}>
+      <span>{notice.message}</span>
+      {notice.actions?.map((action) => <button key={action.label} className="toast-action" onClick={() => { setNotice(null); action.run() }}>{action.label}</button>)}
+      <button className="toast-close" onClick={() => setNotice(null)}><Icon name="close" size={14}/><span className="sr-only">Fermer</span></button>
+    </div>}
   </div>
 }

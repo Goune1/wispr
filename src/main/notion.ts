@@ -63,17 +63,18 @@ function markdownToBlocks(markdown: string): NotionBlock[] {
   return blocks
 }
 
+const documentSuffix: Record<DocumentVariant, string> = { course: '', study: ' — Fiche de révision', notes: ' — Mes notes' }
+
 export class NotionService {
   constructor(private readonly database: AppDatabase, private readonly emit: (progress: JobProgress) => void) {}
 
-  async send(course: Course, variant: DocumentVariant): Promise<{ url: string }> {
+  async send(course: Course, variant: DocumentVariant, markdown: string | null): Promise<{ url: string }> {
     const settings = this.database.getSettings()
     if (!settings.notionToken || !settings.notionParentId) {
       throw new Error('Le token Notion et l’identifiant parent doivent être renseignés dans les réglages.')
     }
-    const markdown = variant === 'study' ? course.studyMarkdown : course.cleanTranscript
-    if (!markdown) throw new Error('Aucune transcription à envoyer.')
-    const title = `${course.title}${variant === 'study' ? ' — Fiche de révision' : ''} — ${new Date(course.createdAt).toLocaleDateString('fr-FR')}`
+    if (!markdown) throw new Error(variant === 'notes' ? 'Vos notes sont vides.' : 'Aucune transcription à envoyer.')
+    const title = `${course.title}${documentSuffix[variant]} — ${new Date(course.createdAt).toLocaleDateString('fr-FR')}`
     let databaseTitleProperty = 'Name'
     if (settings.notionParentType === 'database_id') {
       const info = await this.request<{ properties: Record<string, { type: string }> }>(

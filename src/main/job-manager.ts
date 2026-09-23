@@ -115,7 +115,8 @@ export class JobManager {
     course = this.update(course.id, { status: 'studying', errorStage: null, errorMessage: null })
     const settings = this.database.getSettings()
     const provider: StudyProvider = settings.cleanupProvider === 'codex' ? new CodexStudyProvider() : new ClaudeStudyProvider()
-    const studyMarkdown = await provider.generate({ course, cleanTranscript, settings, emit: this.emitProgress })
+    const studentNotes = this.database.getNotes(course.id).markdown
+    const studyMarkdown = await provider.generate({ course, cleanTranscript, studentNotes, settings, emit: this.emitProgress })
     this.emitProgress({ courseId: course.id, stage: 'study', progress: 100, message: 'Fiche de révision prête.' })
     this.update(course.id, { studyMarkdown, status: 'complete', errorStage: null, errorMessage: null })
   }

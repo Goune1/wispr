@@ -39,6 +39,7 @@ export class RecordingService {
       id,
       title,
       subject,
+      folderId: this.database.folderIdWithin(subject, input.folderId ?? null),
       createdAt,
       durationMs: 0,
       status: 'recording',
