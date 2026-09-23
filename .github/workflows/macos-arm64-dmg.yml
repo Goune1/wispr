@@ -67,10 +67,20 @@ jobs:
           [[ "$architecture" == *arm64* ]]
           dmgs=(dist/*.dmg)
           test "${#dmgs[@]}" -eq 1
-          FAC_SMOKE_TEST=1 "$app/Contents/MacOS/FAC Transcript" >fac-smoke.log 2>&1
-          python3 -c "from pathlib import Path; assert 'FAC_SMOKE_READY' in Path('fac-smoke.log').read_text()"
+          FAC_SMOKE_TEST=1 "$app/Contents/MacOS/FAC Transcript" >fac-smoke.log 2>&1 &
+          smoke_pid=$!
+          ready=0
+          for _ in {1..60}; do
+            if grep -q FAC_SMOKE_READY fac-smoke.log; then ready=1; break; fi
+            if ! kill -0 "$smoke_pid" 2>/dev/null; then break; fi
+            sleep 1
+          done
+          kill "$smoke_pid" 2>/dev/null || true
+          wait "$smoke_pid" 2>/dev/null || true
+          cat fac-smoke.log
+          test "$ready" -eq 1
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: FAC-Transcript-macOS-Apple-Silicon-v0.3.0
+          name: FAC-Transcript-macOS-Apple-Silicon-${{ github.sha }}
           path: dist/*.dmg
           if-no-files-found: error
