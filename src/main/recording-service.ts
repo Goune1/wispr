@@ -49,7 +49,8 @@ export class RecordingService {
       cleanTranscript: null,
       studyMarkdown: null,
       errorStage: null,
-      errorMessage: null
+      errorMessage: null,
+      mergedFrom: null
     }
     const stream = createWriteStream(sourceAudioPath, { flags: 'wx' })
     this.active.set(id, { stream, path: sourceAudioPath })

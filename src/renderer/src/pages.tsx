@@ -226,6 +226,7 @@ export function CoursePage({ course, lib, recorder, actions }: { course: Course;
   const content = view === 'source' ? course.rawTranscript : view === 'study' ? course.studyMarkdown : view === 'notes' ? null : course.cleanTranscript
   const variant: DocumentVariant = view === 'source' ? 'course' : view
   const hasDocument = view === 'notes' || Boolean(content)
+  const merged = Boolean(course.mergedFrom?.length)
 
   useEffect(() => { setView(defaultView(course)) }, [course.id])
   useEffect(() => { if (live) setView('notes') }, [live])
@@ -240,6 +241,7 @@ export function CoursePage({ course, lib, recorder, actions }: { course: Course;
   const generateStudy = (): void => { setView('study'); actions.studyCourse(course.id) }
 
   const emptyTitle = course.status === 'studying' && view === 'study' ? 'Création de la fiche en cours'
+    : course.status === 'merging' ? 'Fusion des cours en cours'
     : busy ? 'Traitement du cours en cours'
       : view === 'study' ? 'Pas encore de fiche de révision'
         : awaiting ? 'Transcription pas encore lancée'
@@ -247,6 +249,7 @@ export function CoursePage({ course, lib, recorder, actions }: { course: Course;
   const emptyMessage = busy ? 'Vous pouvez continuer ailleurs : le traitement se poursuit en arrière-plan.'
     : view === 'study' ? 'Une fiche structurée à partir du cours et de vos notes : notions, définitions, exceptions et questions d’auto-évaluation.'
       : awaiting ? 'L’audio est sauvegardé. Lancez la transcription quand vous voulez.'
+        : merged ? 'Les cours d’origine sont conservés : vous pouvez relancer la fusion.'
         : course.rawTranscript ? 'La transcription source est conservée : vous pouvez relancer le nettoyage.'
           : 'Relancez le traitement depuis l’audio conservé.'
 
@@ -257,10 +260,17 @@ export function CoursePage({ course, lib, recorder, actions }: { course: Course;
     <div className="properties">
       <div className="property"><span className="property-name"><Icon name="book" size={15}/>Matière</span>
         <span className="property-value">{live || !lib.subjects.length ? placeLabel(course, lib.folderById) : <PlacementSelect course={course} lib={lib} onMove={(placement) => actions.moveCourse(course.id, placement)}/>}</span></div>
-      <div className="property"><span className="property-name"><Icon name="clock" size={15}/>Date</span>
+      <div className="property"><span className="property-name"><Icon name="clock" size={15}/>{merged ? 'Créé le' : 'Date'}</span>
         <span className="property-value">{formatDate(course.createdAt)}{course.durationMs ? ` · ${formatDuration(course.durationMs)}` : ''}</span></div>
       <div className="property"><span className="property-name"><Icon name="check" size={15}/>Statut</span>
         <span className="property-value"><StatusBadge course={course}/></span></div>
+      {merged && <div className="property"><span className="property-name"><Icon name="merge" size={15}/>Fusion de</span>
+        <span className="property-value course-sources">{course.mergedFrom!.map((id) => {
+          const source = lib.courses.find((value) => value.id === id)
+          return source
+            ? <button key={id} onClick={() => actions.navigate({ kind: 'course', courseId: id })}>{source.title}</button>
+            : <span key={id} className="missing">Cours supprimé</span>
+        })}</span></div>}
     </div>
 
     {progress && busy && <ProgressBar progress={progress} thinking={thinking}/>}
@@ -282,8 +292,12 @@ export function CoursePage({ course, lib, recorder, actions }: { course: Course;
           <button role="menuitem" disabled={!hasDocument || view === 'source'} onClick={() => { close(); notion() }}><Icon name="notion"/>Envoyer vers Notion</button>
           <div className="menu-separator"/>
           {course.rawTranscript && <button role="menuitem" onClick={() => { close(); setView('source') }}><Icon name="page"/>Voir la source technique</button>}
-          <button role="menuitem" disabled={busy} onClick={() => { close(); actions.retryCourse(course.id) }}><Icon name="retry"/>Retranscrire depuis l’audio</button>
-          <button role="menuitem" disabled={busy || !course.rawTranscript} onClick={() => { close(); actions.cleanupCourse(course.id) }}><Icon name="sparkles"/>Nettoyer à nouveau</button>
+          {merged
+            ? <button role="menuitem" disabled={busy} onClick={() => { close(); setView('course'); actions.processCourse(course.id) }}><Icon name="merge"/>Refaire la fusion</button>
+            : <>
+                <button role="menuitem" disabled={busy} onClick={() => { close(); actions.retryCourse(course.id) }}><Icon name="retry"/>Retranscrire depuis l’audio</button>
+                <button role="menuitem" disabled={busy || !course.rawTranscript} onClick={() => { close(); actions.cleanupCourse(course.id) }}><Icon name="sparkles"/>Nettoyer à nouveau</button>
+              </>}
           <div className="menu-separator"/>
           <button role="menuitem" className="danger" disabled={busy} onClick={() => { close(); actions.deleteCourse(course) }}><Icon name="trash"/>Supprimer le cours</button>
         </>}</Menu>

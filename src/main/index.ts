@@ -1,10 +1,11 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } from 'electron'
 import { electronApp, is } from '@electron-toolkit/utils'
 import { copyFileSync, existsSync, mkdirSync } from 'node:fs'
 import { basename, dirname, extname, join, parse } from 'node:path'
-import { copyFile } from 'node:fs/promises'
+import { pathToFileURL } from 'node:url'
+import { copyFile, cp, mkdir, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
-import type { AppSettings, CleanupProviderName, Course, CourseNotesInput, CoursePlacement, DocumentVariant, JobProgress, RecordingFinishInput, RecordingStartInput } from '../shared/types'
+import type { AppSettings, CleanupProviderName, Course, CourseNotesInput, CoursePlacement, DocumentVariant, JobProgress, MergeInput, RecordingFinishInput, RecordingStartInput } from '../shared/types'
 import { IPC } from '../shared/types'
 import { AppDatabase } from './database'
 import { RecordingService } from './recording-service'
@@ -13,7 +14,8 @@ import { AssetManager, preserveManagedAssetPaths } from './asset-manager'
 import { NotionService } from './notion'
 import { UpdateManager } from './update-manager'
 import { listCliModels } from './model-catalog'
-import { normalizeFolderName, normalizeSubject } from '../shared/course-metadata'
+import { MAX_TITLE_LENGTH, normalizeFolderName, normalizeSubject } from '../shared/course-metadata'
+import { localImagesToFileUrls, MAX_NOTE_IMAGE_BYTES, NOTE_IMAGE_EXTENSIONS, NOTE_IMAGE_SCHEME, noteImageUrl, resolveNoteImagePath, retargetNoteImages, stripLocalImages } from './note-images'
 
 let database: AppDatabase
 let recordingService: RecordingService
@@ -22,6 +24,10 @@ let assetManager: AssetManager
 let notionService: NotionService
 let updateManager: UpdateManager
 let downloadPromise: Promise<void> | null = null
+let noteImagesRoot: string
+
+// Doit être déclaré avant que l'application soit prête pour que les <img> puissent charger ce schéma.
+protocol.registerSchemesAsPrivileged([{ scheme: NOTE_IMAGE_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } }])
 
 // L'application empaquetée prend son icône dans le bundle ; en développement il faut la poser
 // à la main, sinon la barre des tâches et le Dock affichent celle d'Electron.
@@ -141,13 +147,17 @@ function registerIpc(): void {
       await copyFile(path, destination)
       return destination
     }
-    const sourceAudioPath = await copyAudio(course.sourceAudioPath, extname(course.sourceAudioPath))
-    if (!sourceAudioPath) throw new Error(`L’audio de « ${course.title} » est introuvable : impossible de le copier.`)
+    const sourceAudioPath = course.mergedFrom ? '' : await copyAudio(course.sourceAudioPath, extname(course.sourceAudioPath))
+    if (sourceAudioPath === null) throw new Error(`L’audio de « ${course.title} » est introuvable : impossible de le copier.`)
     const wavPath = await copyAudio(course.wavPath, '.16k.wav')
     const samePlace = subject === course.subject && folderId === course.folderId
     const copy = database.createCourse({ ...course, id: copyId, title: samePlace ? `${course.title} (copie)` : course.title, subject, folderId, sourceAudioPath, wavPath })
     const notes = database.getNotes(id)
-    if (notes.blocks) database.saveNotes(copyId, { blocks: notes.blocks, markdown: notes.markdown })
+    if (notes.blocks) {
+      const images = join(noteImagesRoot, id)
+      if (existsSync(images)) await cp(images, join(noteImagesRoot, copyId), { recursive: true })
+      database.saveNotes(copyId, { blocks: retargetNoteImages(notes.blocks, id, copyId), markdown: retargetNoteImages(notes.markdown, id, copyId) })
+    }
     emitCourse(copy)
     return copy
   })
@@ -164,13 +174,15 @@ function registerIpc(): void {
   ipcMain.handle(IPC.coursesRetry, (_event, id: string) => {
     const course = requireCourse(id)
     if (course.errorStage === 'study' && course.cleanTranscript) jobManager.startStudy(id)
+    else if (course.mergedFrom) jobManager.startMerge(id)
     else if (course.errorStage === 'cleanup' && course.rawTranscript) jobManager.startCleanup(id)
     else jobManager.start(id)
   })
   ipcMain.handle(IPC.coursesProcess, (_event, id: string) => {
     const course = requireCourse(id)
     if (course.status === 'recording') throw new Error('L’enregistrement est encore en cours.')
-    jobManager.start(id)
+    if (course.mergedFrom) jobManager.startMerge(id)
+    else jobManager.start(id)
   })
   ipcMain.handle(IPC.coursesCleanup, (_event, id: string) => {
     requireCourse(id)
@@ -180,10 +192,44 @@ function registerIpc(): void {
     requireCourse(id)
     jobManager.startStudy(id)
   })
+  // Fusionner crée un nouveau cours, sans audio, rangé avec le plus ancien des cours fusionnés.
+  // Les cours d'origine restent intacts.
+  ipcMain.handle(IPC.coursesMerge, (_event, input: MergeInput) => {
+    const ids = [...new Set(Array.isArray(input?.courseIds) ? input.courseIds.filter((id): id is string => typeof id === 'string') : [])]
+    if (ids.length < 2) throw new Error('Sélectionnez au moins deux cours à fusionner.')
+    const title = String(input?.title ?? '').replace(/\s+/g, ' ').trim()
+    if (!title) throw new Error('Donnez un titre au cours fusionné.')
+    if (title.length > MAX_TITLE_LENGTH) throw new Error(`Le titre ne peut pas dépasser ${MAX_TITLE_LENGTH} caractères.`)
+    const sources = ids.map(requireCourse).sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    for (const source of sources) {
+      if (source.status === 'recording' || jobManager.isActive(source.id)) throw new Error(`Attendez la fin de l’enregistrement ou du traitement de « ${source.title} » avant de le fusionner.`)
+      if (!source.cleanTranscript) throw new Error(`« ${source.title} » n’a pas encore de cours nettoyé : transcrivez-le avant de le fusionner.`)
+    }
+    const course = database.createCourse({
+      id: randomUUID(),
+      title,
+      subject: sources[0].subject,
+      folderId: sources[0].folderId,
+      createdAt: new Date().toISOString(),
+      durationMs: sources.reduce((sum, source) => sum + source.durationMs, 0),
+      status: 'merging',
+      sourceAudioPath: '',
+      wavPath: null,
+      rawTranscript: null,
+      cleanTranscript: null,
+      studyMarkdown: null,
+      errorStage: null,
+      errorMessage: null,
+      mergedFrom: sources.map((source) => source.id)
+    })
+    emitCourse(course)
+    jobManager.startMerge(course.id)
+    return course
+  })
   ipcMain.handle(IPC.coursesRemove, async (_event, id: string) => {
     const course = requireCourse(id)
     if (jobManager.isActive(id)) throw new Error('Attendez la fin du traitement avant de supprimer ce cours.')
-    for (const path of [course.sourceAudioPath, course.wavPath]) {
+    for (const path of [course.sourceAudioPath, course.wavPath, join(noteImagesRoot, id)]) {
       if (path && existsSync(path)) await shell.trashItem(path)
     }
     database.deleteCourse(id)
@@ -215,7 +261,8 @@ function registerIpc(): void {
       cleanTranscript: null,
       studyMarkdown: null,
       errorStage: null,
-      errorMessage: null
+      errorMessage: null,
+      mergedFrom: null
     })
     emitCourse(course)
     jobManager.start(id)
@@ -226,7 +273,8 @@ function registerIpc(): void {
     : variant === 'study' ? course.studyMarkdown : course.cleanTranscript
   ipcMain.handle(IPC.coursesExport, async (_event, id: string, variant: DocumentVariant) => {
     const course = requireCourse(id)
-    const content = documentMarkdown(course, variant)
+    const markdown = documentMarkdown(course, variant)
+    const content = markdown && variant === 'notes' ? localImagesToFileUrls(markdown, noteImagesRoot) : markdown
     if (!content) throw new Error(variant === 'notes' ? 'Vos notes sont vides.' : 'Aucune transcription à exporter.')
     const result = await dialog.showSaveDialog({
       title: 'Exporter la transcription',
@@ -240,11 +288,24 @@ function registerIpc(): void {
   })
   ipcMain.handle(IPC.coursesNotion, async (_event, id: string, variant: DocumentVariant) => {
     const course = requireCourse(id)
-    return notionService.send(course, variant, documentMarkdown(course, variant))
+    const markdown = documentMarkdown(course, variant)
+    return notionService.send(course, variant, markdown && variant === 'notes' ? stripLocalImages(markdown) || null : markdown)
   })
   ipcMain.handle(IPC.notesGet, (_event, courseId: string) => {
     requireCourse(courseId)
     return database.getNotes(courseId)
+  })
+  ipcMain.handle(IPC.notesUploadImage, async (_event, courseId: string, name: unknown, bytes: unknown) => {
+    requireCourse(courseId)
+    if (!(bytes instanceof Uint8Array) || !bytes.byteLength) throw new Error('Image invalide.')
+    if (bytes.byteLength > MAX_NOTE_IMAGE_BYTES) throw new Error(`L’image dépasse ${MAX_NOTE_IMAGE_BYTES / 1024 / 1024} Mo.`)
+    const extension = extname(String(name ?? '')).toLowerCase()
+    if (!NOTE_IMAGE_EXTENSIONS.includes(extension)) throw new Error(`Seules les images peuvent être ajoutées aux notes (${NOTE_IMAGE_EXTENSIONS.join(', ')}).`)
+    const fileName = `${randomUUID()}${extension}`
+    const directory = join(noteImagesRoot, courseId)
+    await mkdir(directory, { recursive: true })
+    await writeFile(join(directory, fileName), bytes)
+    return noteImageUrl(courseId, fileName)
   })
   ipcMain.handle(IPC.notesSave, (_event, courseId: string, notes: CourseNotesInput) => {
     requireCourse(courseId)
@@ -295,6 +356,12 @@ app.whenReady().then(() => {
   const userData = app.getPath('userData')
   database = new AppDatabase(join(userData, 'fac-transcript.sqlite3'), join(userData, 'audio'))
   database.recoverInterruptedCourses()
+  noteImagesRoot = join(userData, 'note-images')
+  protocol.handle(NOTE_IMAGE_SCHEME, (request) => {
+    const path = resolveNoteImagePath(noteImagesRoot, request.url)
+    if (!path || !existsSync(path)) return new Response('Image introuvable', { status: 404 })
+    return net.fetch(pathToFileURL(path).href)
+  })
   recordingService = new RecordingService(database)
   jobManager = new JobManager(database, emitProgress, emitCourse)
   assetManager = new AssetManager(database, join(userData, 'runtime'), emitProgress, {

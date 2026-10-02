@@ -5,6 +5,7 @@ export type CourseStatus =
   | 'transcribing'
   | 'cleaning'
   | 'studying'
+  | 'merging'
   | 'complete'
   | 'error'
 
@@ -26,6 +27,8 @@ export interface Course {
   studyMarkdown: string | null
   errorStage: string | null
   errorMessage: string | null
+  // Cours issu de la fusion d'autres cours par l'IA : il n'a pas d'audio, seulement ses sources.
+  mergedFrom: string[] | null
 }
 
 // Sous-dossier personnalisé d'une matière (cours magistral, travaux dirigés…). La matière
@@ -87,7 +90,7 @@ export interface UpdateStatus {
   message?: string
 }
 
-export type JobStage = 'download' | 'conversion' | 'transcription' | 'cleanup' | 'study' | 'notion'
+export type JobStage = 'download' | 'conversion' | 'transcription' | 'cleanup' | 'study' | 'merge' | 'notion'
 export type DocumentVariant = 'course' | 'study' | 'notes'
 
 export interface JobProgress {
@@ -114,6 +117,11 @@ export interface RecordingFinishInput {
   durationMs: number
 }
 
+export interface MergeInput {
+  courseIds: string[]
+  title: string
+}
+
 export interface ExportResult {
   canceled: boolean
   filePath?: string
@@ -137,6 +145,7 @@ export interface AppApi {
     startProcessing(id: string): Promise<void>
     rerunCleanup(id: string): Promise<void>
     generateStudyGuide(id: string): Promise<void>
+    merge(input: MergeInput): Promise<Course>
     importAudio(): Promise<Course | null>
     exportMarkdown(id: string, variant: DocumentVariant): Promise<ExportResult>
     sendToNotion(id: string, variant: DocumentVariant): Promise<{ url: string }>
@@ -153,6 +162,7 @@ export interface AppApi {
   notes: {
     get(courseId: string): Promise<CourseNotes>
     save(courseId: string, notes: CourseNotesInput): Promise<void>
+    uploadImage(courseId: string, name: string, bytes: Uint8Array): Promise<string>
   }
   recording: {
     start(input: RecordingStartInput): Promise<RecordingStartResult>
@@ -195,6 +205,7 @@ export const IPC = {
   coursesProcess: 'courses:process',
   coursesCleanup: 'courses:cleanup',
   coursesStudy: 'courses:study',
+  coursesMerge: 'courses:merge',
   coursesImport: 'courses:import',
   coursesExport: 'courses:export',
   coursesNotion: 'courses:notion',
@@ -205,6 +216,7 @@ export const IPC = {
   subjectsRename: 'subjects:rename',
   notesGet: 'notes:get',
   notesSave: 'notes:save',
+  notesUploadImage: 'notes:upload-image',
   recordingStart: 'recording:start',
   recordingChunk: 'recording:chunk',
   recordingFinish: 'recording:finish',

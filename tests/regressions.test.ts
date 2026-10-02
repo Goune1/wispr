@@ -9,6 +9,8 @@ import { buildClaudeArgs, RAW_OUTPUT_SYSTEM_PROMPT } from '../src/main/claude-cl
 import { stripModelCommentary } from '../src/main/model-output.ts'
 import { buildStudyPrompt } from '../src/main/study-prompt.ts'
 import { buildCleanupPrompt } from '../src/main/cleanup-prompt.ts'
+import { localImagesToFileUrls, noteImageUrl, resolveNoteImagePath, retargetNoteImages, stripLocalImages } from '../src/main/note-images.ts'
+import { buildMergePlanPrompt, buildMergePrompt, buildMergeSectionPrompt, parseMergePlan } from '../src/main/merge-prompt.ts'
 import { parseClaudeModelAliases, parseCodexModelCatalog } from '../src/main/model-catalog-parsers.ts'
 import { selectWhisperBinarySource } from '../src/main/whisper-platform.ts'
 import { cliExecutionPath, resolveCliExecutable } from '../src/main/cli-path.ts'
@@ -31,7 +33,7 @@ function course(overrides: Partial<Course> = {}): Course {
   return {
     id: 'id', title: 'Cours', subject: '', folderId: null, createdAt: '2026-09-10T08:00:00.000Z', durationMs: 0, status: 'complete',
     sourceAudioPath: 'a.webm', wavPath: null, rawTranscript: null, cleanTranscript: null, studyMarkdown: null,
-    errorStage: null, errorMessage: null, ...overrides
+    errorStage: null, errorMessage: null, mergedFrom: null, ...overrides
   }
 }
 
@@ -310,4 +312,55 @@ test('les matières proposées au lancement suivent l’usage le plus récent', 
     course({ id: '3', subject: 'Analyse', createdAt: '2026-09-10T08:00:00.000Z' })
   ]
   assert.deepEqual(subjectsByRecentUse(library, ['Analyse', 'Anglais', 'Droit pénal', 'Biologie']), ['Droit pénal', 'Analyse', 'Anglais', 'Biologie'])
+})
+
+const mergeSources = [
+  { title: 'Responsabilité — séance 1', createdAt: '2026-09-10T08:00:00.000Z', transcript: 'La faute est la première condition.' },
+  { title: 'Responsabilité — séance 2', createdAt: '2026-09-17T08:00:00.000Z', transcript: 'Le lien de causalité est la troisième condition.' }
+]
+
+test('la fusion conserve tout le contenu, retire les redites et signale les contradictions', () => {
+  const prompt = buildMergePrompt('Responsabilité civile', 'Droit des obligations', mergeSources)
+  assert.match(prompt, /Conserve 100 % du contenu pédagogique/)
+  assert.match(prompt, /Supprime les redites/)
+  assert.match(prompt, /À vérifier/)
+  assert.match(prompt, /N’invente jamais/)
+  assert.match(prompt, /commence directement par « # Responsabilité civile »/)
+  assert.match(prompt, /Droit des obligations/)
+  assert.ok(prompt.indexOf('La faute est la première condition.') < prompt.indexOf('Le lien de causalité'))
+  assert.match(prompt, /<enregistrement numero="2"[^>]*séance 2/)
+})
+
+test('le plan de fusion est découpé en parties avec leur périmètre', () => {
+  const plan = parseMergePlan('Voici le plan :\n## La faute\n- notion ; appréciation in abstracto\n\n## Le dommage\n- caractères du préjudice\n## Le lien de causalité')
+  assert.deepEqual(plan, [
+    { heading: 'La faute', scope: 'notion ; appréciation in abstracto' },
+    { heading: 'Le dommage', scope: 'caractères du préjudice' },
+    { heading: 'Le lien de causalité', scope: '' }
+  ])
+  assert.match(buildMergePlanPrompt('Responsabilité civile', '', mergeSources), /établis uniquement son plan commun/)
+  const section = buildMergeSectionPrompt('Responsabilité civile', '', mergeSources, plan, 1)
+  assert.match(section, /partie 2 sur 3 : « Le dommage »/)
+  assert.match(section, /commence directement par « ## Le dommage »/)
+  assert.match(section, /1\. La faute — notion/)
+})
+
+test('une image de notes ne peut désigner qu’un fichier du dossier d’images, sans remonter ailleurs', () => {
+  const root = join(tmpdir(), 'note-images')
+  assert.equal(resolveNoteImagePath(root, noteImageUrl('cours-1', 'abc-123.png')), join(root, 'cours-1', 'abc-123.png'))
+  assert.equal(resolveNoteImagePath(root, 'fac-media://notes/cours-1/../../secret.png'), null)
+  assert.equal(resolveNoteImagePath(root, 'fac-media://notes/cours-1/%2e%2e%2fsecret.png'), null)
+  assert.equal(resolveNoteImagePath(root, 'fac-media://notes/cours-1/sous/dossier.png'), null)
+  assert.equal(resolveNoteImagePath(root, 'fac-media://autre/cours-1/abc.png'), null)
+  assert.equal(resolveNoteImagePath(root, 'file:///etc/passwd'), null)
+})
+
+test('les images locales des notes sont adaptées à l’export, à l’IA et à la copie du cours', () => {
+  const markdown = `Avant\n\n![Schéma du circuit](${noteImageUrl('c1', 'a1.png')})\n\n![](${noteImageUrl('c1', 'b2.jpg')})\n\nAprès ![web](https://exemple.fr/x.png)`
+  assert.equal(stripLocalImages(markdown), 'Avant\n\n*[Image : Schéma du circuit]*\n\nAprès ![web](https://exemple.fr/x.png)')
+  const exported = localImagesToFileUrls(markdown, join(tmpdir(), 'note-images'))
+  assert.match(exported, /!\[Schéma du circuit\]\(file:\/\/\/.*note-images\/c1\/a1\.png\)/)
+  assert.ok(!exported.includes('fac-media://'))
+  assert.equal(retargetNoteImages(markdown, 'c1', 'c2').includes(noteImageUrl('c2', 'a1.png')), true)
+  assert.equal(retargetNoteImages(markdown, 'c1', 'c2').includes('notes/c1/'), false)
 })

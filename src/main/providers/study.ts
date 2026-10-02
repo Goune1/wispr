@@ -18,7 +18,7 @@ export interface StudyProvider {
   generate(context: StudyContext): Promise<string>
 }
 
-function parseCodexOutput(stdout: string): string {
+export function parseCodexOutput(stdout: string): string {
   let result = ''
   for (const line of stdout.split('\n').filter(Boolean)) {
     try {

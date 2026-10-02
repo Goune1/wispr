@@ -7,7 +7,7 @@ import { capturedMsAt, type CaptureClock } from './recording-clock'
 export type IconName =
   | 'record' | 'import' | 'settings' | 'copy' | 'export' | 'notion' | 'retry' | 'trash' | 'back' | 'forward' | 'close' | 'stop'
   | 'sparkles' | 'more' | 'edit' | 'pause' | 'play' | 'search' | 'folder' | 'chevron' | 'plus' | 'home' | 'page' | 'book'
-  | 'notes' | 'check' | 'mic' | 'clock' | 'enter' | 'cut' | 'paste' | 'move'
+  | 'notes' | 'check' | 'mic' | 'clock' | 'enter' | 'cut' | 'paste' | 'move' | 'merge'
 
 export function Icon({ name, size = 16 }: { name: IconName; size?: number }): JSX.Element {
   const paths: Record<IconName, JSX.Element> = {
@@ -42,20 +42,22 @@ export function Icon({ name, size = 16 }: { name: IconName; size?: number }): JS
     enter: <path d="M19 5.5v6a2 2 0 0 1-2 2H6m0 0 4-4m-4 4 4 4"/>,
     cut: <><circle cx="6.5" cy="17.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/><path d="M8.3 15.7 18 4.5M15.7 15.7 6 4.5"/></>,
     paste: <><rect x="5.5" y="4.5" width="13" height="16" rx="2"/><path d="M9 4.5V3.5h6v1M9 11h6M9 14.5h4"/></>,
-    move: <><path d="M3.5 7.5a2 2 0 0 1 2-2h3.8l2 2h7.2a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-9Z"/><path d="M10 13h5m0 0-2-2m2 2-2 2"/></>
+    move: <><path d="M3.5 7.5a2 2 0 0 1 2-2h3.8l2 2h7.2a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-9Z"/><path d="M10 13h5m0 0-2-2m2 2-2 2"/></>,
+    merge: <><path d="M6 4.5v3a5 5 0 0 0 5 5h1a5 5 0 0 1 5 5v2"/><path d="M18 4.5v3a5 5 0 0 1-3.5 4.8"/><path d="m14.5 17.5 2.5 2.5 2.5-2.5"/></>
   }
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>
 }
 
 export const statusLabel: Record<Course['status'], string> = {
   recording: 'En direct', converting: 'Préparation', recorded: 'Audio prêt', transcribing: 'Transcription',
-  cleaning: 'Nettoyage', studying: 'Fiche en cours', complete: 'Prêt', error: 'À reprendre'
+  cleaning: 'Nettoyage', studying: 'Fiche en cours', merging: 'Fusion', complete: 'Prêt', error: 'À reprendre'
 }
 
 export const thinkingStatusLabel: Partial<Record<Course['status'], string>> = {
   transcribing: 'Transcription du cours en cours',
   cleaning: 'Nettoyage de la transcription en cours',
-  studying: 'Création de la fiche de révision en cours'
+  studying: 'Création de la fiche de révision en cours',
+  merging: 'Fusion des cours en cours'
 }
 
 export const COURSE_DRAG_TYPE = 'application/x-fac-course'
@@ -64,11 +66,11 @@ export const COURSE_DRAG_TYPE = 'application/x-fac-course'
 export const FOLDER_SUGGESTIONS = ['Cours magistral', 'Travaux dirigés', 'Travaux pratiques', 'Examens', 'Annales']
 
 export function isThinkingStatus(status: Course['status']): boolean {
-  return status === 'transcribing' || status === 'cleaning' || status === 'studying'
+  return status === 'transcribing' || status === 'cleaning' || status === 'studying' || status === 'merging'
 }
 
 export function isBusy(course: Course): boolean {
-  return ['converting', 'transcribing', 'cleaning', 'studying'].includes(course.status)
+  return ['converting', 'transcribing', 'cleaning', 'studying', 'merging'].includes(course.status)
 }
 
 export function isAwaitingProcessing(course: Course): boolean {

@@ -14,6 +14,7 @@ const api: AppApi = {
     startProcessing: (id) => ipcRenderer.invoke(IPC.coursesProcess, id),
     rerunCleanup: (id) => ipcRenderer.invoke(IPC.coursesCleanup, id),
     generateStudyGuide: (id) => ipcRenderer.invoke(IPC.coursesStudy, id),
+    merge: (input) => ipcRenderer.invoke(IPC.coursesMerge, input),
     importAudio: () => ipcRenderer.invoke(IPC.coursesImport),
     exportMarkdown: (id, variant) => ipcRenderer.invoke(IPC.coursesExport, id, variant),
     sendToNotion: (id, variant) => ipcRenderer.invoke(IPC.coursesNotion, id, variant)
@@ -29,7 +30,8 @@ const api: AppApi = {
   },
   notes: {
     get: (courseId) => ipcRenderer.invoke(IPC.notesGet, courseId),
-    save: (courseId, notes) => ipcRenderer.invoke(IPC.notesSave, courseId, notes)
+    save: (courseId, notes) => ipcRenderer.invoke(IPC.notesSave, courseId, notes),
+    uploadImage: (courseId, name, bytes) => ipcRenderer.invoke(IPC.notesUploadImage, courseId, name, bytes)
   },
   recording: {
     start: (input: RecordingStartInput) => ipcRenderer.invoke(IPC.recordingStart, input),

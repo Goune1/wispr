@@ -43,6 +43,16 @@ const dictionary = {
 
 type SaveState = 'saved' | 'dirty' | 'saving' | 'error'
 
+const IMAGE_EXTENSIONS: Record<string, string> = {
+  'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif', 'image/webp': '.webp',
+  'image/heic': '.heic', 'image/avif': '.avif', 'image/bmp': '.bmp'
+}
+
+// Une capture collée depuis le presse-papiers arrive parfois sans extension : on la déduit du type.
+function imageFileName(file: File): string {
+  return /\.[a-z0-9]{2,5}$/i.test(file.name) ? file.name : `image${IMAGE_EXTENSIONS[file.type] ?? ''}`
+}
+
 function parseBlocks(value: string | null): PartialBlock[] | undefined {
   if (!value) return undefined
   try {
@@ -71,7 +81,20 @@ export function NotesEditor({ courseId, className = '', onError }: { courseId: s
 }
 
 function LoadedEditor({ courseId, initialContent, onError }: { courseId: string; initialContent: PartialBlock[] | undefined; onError(message: string): void }): JSX.Element {
-  const editor = useCreateBlockNote({ initialContent, dictionary })
+  // Importer, glisser-déposer ou coller une image : le fichier est copié avec les données de l'application.
+  const editor = useCreateBlockNote({
+    initialContent,
+    dictionary,
+    uploadFile: async (file: File) => {
+      try {
+        return await window.api.notes.uploadImage(courseId, imageFileName(file), new Uint8Array(await file.arrayBuffer()))
+      } catch (error) {
+        const message = error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '') : String(error)
+        onError(message)
+        throw error
+      }
+    }
+  })
   const [state, setState] = useState<SaveState>('saved')
   const timer = useRef<number | null>(null)
   const dirty = useRef(false)

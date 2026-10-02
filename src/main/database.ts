@@ -19,6 +19,7 @@ interface CourseRow {
   study_markdown: string | null
   error_stage: string | null
   error_message: string | null
+  merged_from: string | null
 }
 
 interface FolderRow {
@@ -87,6 +88,9 @@ export class AppDatabase {
     if (!courseColumns.some((column) => column.name === 'folder_id')) {
       this.db.exec('ALTER TABLE courses ADD COLUMN folder_id TEXT REFERENCES folders(id) ON DELETE SET NULL')
     }
+    if (!courseColumns.some((column) => column.name === 'merged_from')) {
+      this.db.exec('ALTER TABLE courses ADD COLUMN merged_from TEXT')
+    }
   }
 
   listCourses(): Course[] {
@@ -103,12 +107,12 @@ export class AppDatabase {
     this.db.prepare(`
       INSERT INTO courses (
         id, title, subject, folder_id, created_at, duration_ms, status, source_audio_path, wav_path,
-        raw_transcript, clean_transcript, study_markdown, error_stage, error_message
+        raw_transcript, clean_transcript, study_markdown, error_stage, error_message, merged_from
       ) VALUES (
         @id, @title, @subject, @folderId, @createdAt, @durationMs, @status, @sourceAudioPath, @wavPath,
-        @rawTranscript, @cleanTranscript, @studyMarkdown, @errorStage, @errorMessage
+        @rawTranscript, @cleanTranscript, @studyMarkdown, @errorStage, @errorMessage, @mergedFrom
       )
-    `).run(course)
+    `).run({ ...course, mergedFrom: course.mergedFrom ? JSON.stringify(course.mergedFrom) : null })
     return course
   }
 
@@ -117,14 +121,14 @@ export class AppDatabase {
       title: 'title', subject: 'subject', folderId: 'folder_id', createdAt: 'created_at', durationMs: 'duration_ms', status: 'status',
       sourceAudioPath: 'source_audio_path', wavPath: 'wav_path', rawTranscript: 'raw_transcript',
       cleanTranscript: 'clean_transcript', studyMarkdown: 'study_markdown',
-      errorStage: 'error_stage', errorMessage: 'error_message'
+      errorStage: 'error_stage', errorMessage: 'error_message', mergedFrom: 'merged_from'
     }
     const entries = Object.entries(patch).filter(([key]) => key in keyMap)
     if (entries.length) {
       const values: Record<string, unknown> = { id }
       const assignments = entries.map(([key, value], index) => {
         const parameter = `value${index}`
-        values[parameter] = value
+        values[parameter] = key === 'mergedFrom' && Array.isArray(value) ? JSON.stringify(value) : value
         return `${keyMap[key]} = @${parameter}`
       })
       this.db.prepare(`UPDATE courses SET ${assignments.join(', ')} WHERE id = @id`).run(values)
@@ -214,11 +218,12 @@ export class AppDatabase {
             WHEN 'transcribing' THEN 'transcription'
             WHEN 'cleaning' THEN 'cleanup'
             WHEN 'studying' THEN 'study'
+            WHEN 'merging' THEN 'merge'
             ELSE status
           END,
           status = 'error',
           error_message = 'L’application a été fermée pendant ce traitement. Les sources et documents déjà produits sont intacts : relancez le traitement.'
-      WHERE status IN ('recording', 'converting', 'transcribing', 'cleaning', 'studying')
+      WHERE status IN ('recording', 'converting', 'transcribing', 'cleaning', 'studying', 'merging')
     `).run()
   }
 
@@ -286,7 +291,8 @@ export class AppDatabase {
       cleanTranscript: row.clean_transcript,
       studyMarkdown: row.study_markdown,
       errorStage: row.error_stage,
-      errorMessage: row.error_message
+      errorMessage: row.error_message,
+      mergedFrom: row.merged_from ? JSON.parse(row.merged_from) as string[] : null
     }
   }
 

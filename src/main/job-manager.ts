@@ -4,11 +4,14 @@ import type { CleanupProvider } from './providers/cleanup'
 import { ClaudeCodeProvider, CodexProvider } from './providers/cleanup'
 import type { STTProvider } from './providers/stt'
 import { LocalWhisperProvider, OpenAIProvider } from './providers/stt'
+import type { MergeProvider } from './providers/merge'
+import { ClaudeMergeProvider, CodexMergeProvider } from './providers/merge'
 import type { StudyProvider } from './providers/study'
 import { ClaudeStudyProvider, CodexStudyProvider } from './providers/study'
 import type { Course, JobProgress, JobStage } from '../shared/types'
 import type { AppDatabase } from './database'
 import { RecordingService } from './recording-service'
+import { stripLocalImages } from './note-images'
 import { runProcess } from './process-utils'
 
 export class JobManager {
@@ -40,6 +43,12 @@ export class JobManager {
     if (this.active.has(courseId)) return
     this.active.add(courseId)
     void this.studyOnly(courseId).finally(() => this.active.delete(courseId))
+  }
+
+  startMerge(courseId: string): void {
+    if (this.active.has(courseId)) return
+    this.active.add(courseId)
+    void this.mergeOnly(courseId).finally(() => this.active.delete(courseId))
   }
 
   private async run(courseId: string): Promise<void> {
@@ -93,6 +102,31 @@ export class JobManager {
     }
   }
 
+  // Les sources sont relues à chaque fusion : relancer reprend leur version nettoyée la plus récente.
+  private async mergeOnly(courseId: string): Promise<void> {
+    try {
+      let course = this.requireCourse(courseId)
+      if (!course.mergedFrom?.length) throw new Error('Ce cours n’est pas issu d’une fusion.')
+      const sources = course.mergedFrom.map((id) => this.database.getCourse(id))
+      if (sources.some((source) => !source)) throw new Error('Un des cours fusionnés a été supprimé : la fusion ne peut plus être refaite.')
+      const missing = sources.find((source) => !source!.cleanTranscript)
+      if (missing) throw new Error(`« ${missing.title} » n’a pas de cours nettoyé : terminez son traitement avant de refaire la fusion.`)
+      course = this.update(courseId, { status: 'merging', errorStage: null, errorMessage: null })
+      const settings = this.database.getSettings()
+      const provider: MergeProvider = settings.cleanupProvider === 'codex' ? new CodexMergeProvider() : new ClaudeMergeProvider()
+      const cleanTranscript = await provider.merge({
+        course,
+        sources: sources.map((source) => ({ title: source!.title, createdAt: source!.createdAt, transcript: source!.cleanTranscript! })),
+        settings,
+        emit: this.emitProgress
+      })
+      this.emitProgress({ courseId, stage: 'merge', progress: 100, message: 'Fusion terminée.' })
+      this.update(courseId, { cleanTranscript, studyMarkdown: null, status: 'complete', errorStage: null, errorMessage: null })
+    } catch (error) {
+      this.fail(courseId, 'merge', error)
+    }
+  }
+
   private async performCleanup(course: Course): Promise<void> {
     if (!course.rawTranscript) throw new Error('La transcription brute est vide.')
     const rawTranscript = course.rawTranscript
@@ -115,7 +149,7 @@ export class JobManager {
     course = this.update(course.id, { status: 'studying', errorStage: null, errorMessage: null })
     const settings = this.database.getSettings()
     const provider: StudyProvider = settings.cleanupProvider === 'codex' ? new CodexStudyProvider() : new ClaudeStudyProvider()
-    const studentNotes = this.database.getNotes(course.id).markdown
+    const studentNotes = stripLocalImages(this.database.getNotes(course.id).markdown)
     const studyMarkdown = await provider.generate({ course, cleanTranscript, studentNotes, settings, emit: this.emitProgress })
     this.emitProgress({ courseId: course.id, stage: 'study', progress: 100, message: 'Fiche de révision prête.' })
     this.update(course.id, { studyMarkdown, status: 'complete', errorStage: null, errorMessage: null })

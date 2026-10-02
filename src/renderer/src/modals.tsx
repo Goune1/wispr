@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { JSX } from 'react'
-import type { AppSettings, AssetStatus, CliModelOption, CoursePlacement, JobProgress, UpdateStatus } from '../../shared/types'
-import { QuickStart, type LibraryView } from './components'
+import type { AppSettings, AssetStatus, CliModelOption, Course, CoursePlacement, JobProgress, UpdateStatus } from '../../shared/types'
+import { MAX_TITLE_LENGTH } from '../../shared/course-metadata'
+import { placeLabel, QuickStart, type LibraryView } from './components'
 import type { RecordingMetadata } from './use-recorder'
 import { foldForSearch } from './course-filter'
-import { Icon, Kbd, plural, ProgressBar } from './ui'
+import { collapseSpaces, formatRelativeDate, Icon, isBusy, Kbd, plural, ProgressBar } from './ui'
 
 interface Destination { key: string; placement: CoursePlacement; label: string; hint?: string; nested: boolean }
 
@@ -51,6 +52,56 @@ export function MoveDialog({ lib, count, onChoose, onClose }: {
         </button>)}
       </div>
     </div>
+  </div>
+}
+
+function mergeBlocker(course: Course): string | null {
+  if (course.status === 'recording') return 'En cours d’enregistrement'
+  if (isBusy(course)) return 'Traitement en cours'
+  if (!course.cleanTranscript) return 'Pas encore de cours nettoyé'
+  return null
+}
+
+// Fusionner plusieurs enregistrements d'un même chapitre en un seul cours rédigé par l'IA.
+export function MergeDialog({ lib, courses, onMerge, onClose }: {
+  lib: LibraryView; courses: Course[]; onMerge(title: string): Promise<boolean>; onClose(): void
+}): JSX.Element {
+  const sorted = useMemo(() => [...courses].sort((a, b) => a.createdAt.localeCompare(b.createdAt)), [courses])
+  const [title, setTitle] = useState(() => `${sorted[0]?.title ?? 'Cours'} (fusion)`)
+  const [merging, setMerging] = useState(false)
+  const blocked = sorted.some((course) => mergeBlocker(course))
+  const canMerge = sorted.length >= 2 && !blocked && Boolean(collapseSpaces(title)) && !merging
+  const submit = async (): Promise<void> => {
+    if (!canMerge) return
+    setMerging(true)
+    if (!(await onMerge(collapseSpaces(title)))) setMerging(false)
+  }
+
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}
+    onKeyDown={(event) => { if (event.key === 'Escape') onClose() }}>
+    <section className="modal compact" role="dialog" aria-modal="true" aria-labelledby="merge-title">
+      <header><h2 id="merge-title">Fusionner {plural(sorted.length, 'cours', 'cours')}</h2><button className="icon-button" onClick={onClose}><Icon name="close"/><span className="sr-only">Annuler</span></button></header>
+      <div className="modal-body merge-body">
+        <p className="merge-intro">L’IA réunit ces enregistrements en un seul cours : les redites sont supprimées, les compléments de chaque séance intégrés et les contradictions signalées « À vérifier ». Les cours d’origine sont conservés.</p>
+        <ol className="merge-sources">
+          {sorted.map((course) => {
+            const blocker = mergeBlocker(course)
+            return <li key={course.id} className={blocker ? 'blocked' : ''}>
+              <Icon name="page" size={15}/>
+              <span className="merge-source-title">{course.title}</span>
+              <span className="merge-source-meta">{blocker ?? `${placeLabel(course, lib.folderById)} · ${formatRelativeDate(course.createdAt)}`}</span>
+            </li>
+          })}
+        </ol>
+        <label className="merge-field"><span>Titre du cours fusionné</span>
+          <input autoFocus value={title} maxLength={MAX_TITLE_LENGTH} onChange={(event) => setTitle(event.target.value)}
+            onFocus={(event) => event.target.select()}
+            onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void submit() } }}/>
+        </label>
+        {blocked && <p className="form-error" role="alert">Seuls des cours transcrits et nettoyés peuvent être fusionnés.</p>}
+      </div>
+      <footer><button className="button subtle" onClick={onClose}>Annuler</button><button className="button primary" onClick={() => void submit()} disabled={!canMerge}><Icon name="merge" size={14}/>{merging ? 'Lancement…' : 'Fusionner'}</button></footer>
+    </section>
   </div>
 }
 

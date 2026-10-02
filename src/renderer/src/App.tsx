@@ -5,7 +5,7 @@ import { normalizeSubject } from '../../shared/course-metadata'
 import { buildLibraryTree, subjectsByRecentUse } from './course-filter'
 import { CommandPalette } from './CommandPalette'
 import type { LibraryActions, LibraryView } from './components'
-import { MoveDialog, QuickStartModal, SettingsModal } from './modals'
+import { MergeDialog, MoveDialog, QuickStartModal, SettingsModal } from './modals'
 import { sameRoute, useNavigation, type Route } from './navigation'
 import { CoursePage, HomePage, LocationPage } from './pages'
 import { Sidebar } from './Sidebar'
@@ -40,6 +40,7 @@ export function App(): JSX.Element {
   const [clipboard, setClipboard] = useState<LibraryView['clipboard']>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; items: ContextMenuItem[] } | null>(null)
   const [moveTargets, setMoveTargets] = useState<string[] | null>(null)
+  const [mergeTargets, setMergeTargets] = useState<string[] | null>(null)
   // Matières créées à la main qui n'ont encore ni cours ni dossier (non persistées).
   const [draftSubjects, setDraftSubjects] = useState<string[]>([])
   const nav = useNavigation()
@@ -190,6 +191,15 @@ export function App(): JSX.Element {
     if (clipboard.mode === 'cut') { moveCourses(clipboard.courseIds, placement); setClipboard(null) }
     else void copyCourses(clipboard.courseIds, placement)
   }
+  const mergeCourses = async (ids: string[], title: string): Promise<boolean> => {
+    try {
+      const course = await window.api.courses.merge({ courseIds: ids, title })
+      setMergeTargets(null)
+      setSelectedIds(new Set())
+      navigate({ kind: 'course', courseId: course.id })
+      return true
+    } catch (error) { return failed(error) }
+  }
   const deleteCourses = (targets: Course[]): void => {
     const deletable = targets.filter((course) => course.status !== 'recording')
     if (!deletable.length) return
@@ -253,6 +263,7 @@ export function App(): JSX.Element {
         { label: single ? 'Couper' : `Couper ${targets.length} cours`, icon: 'cut', shortcut: `${MOD_KEY} X`, run: () => toClipboard('cut', targets) },
         { label: single ? 'Copier' : `Copier ${targets.length} cours`, icon: 'copy', shortcut: `${MOD_KEY} C`, run: () => toClipboard('copy', targets) },
         { label: 'Déplacer vers…', icon: 'move', run: () => setMoveTargets(targets) },
+        ...(single ? [] : [{ label: `Fusionner ${targets.length} cours…`, icon: 'merge' as const, run: () => setMergeTargets(targets) }]),
         'separator',
         { label: single ? 'Supprimer' : `Supprimer ${targets.length} cours`, icon: 'trash', danger: true, run: () => deleteCourses(targetCourses) }
       ])
@@ -416,11 +427,14 @@ export function App(): JSX.Element {
       <button onClick={() => toClipboard('cut', [...selectedIds])} title={`${MOD_KEY} X`}><Icon name="cut" size={14}/>Couper</button>
       <button onClick={() => toClipboard('copy', [...selectedIds])} title={`${MOD_KEY} C`}><Icon name="copy" size={14}/>Copier</button>
       <button onClick={() => setMoveTargets([...selectedIds])}><Icon name="move" size={14}/>Déplacer vers…</button>
+      {selectedIds.size > 1 && <button onClick={() => setMergeTargets([...selectedIds])}><Icon name="merge" size={14}/>Fusionner</button>}
       <button className="danger" onClick={() => deleteCourses([...selectedIds].map((id) => courses.find((course) => course.id === id)).filter((course): course is Course => Boolean(course)))}><Icon name="trash" size={14}/></button>
       <button className="close" onClick={() => setSelectedIds(new Set())} title="Échap"><Icon name="close" size={14}/><span className="sr-only">Désélectionner</span></button>
     </div>}
     {contextMenu && <ContextMenu x={contextMenu.x} y={contextMenu.y} items={contextMenu.items} onClose={() => setContextMenu(null)}/>}
     {moveTargets && <MoveDialog lib={lib} count={moveTargets.length} onClose={() => setMoveTargets(null)} onChoose={(placement) => { const ids = moveTargets; setMoveTargets(null); moveCourses(ids, placement) }}/>}
+    {mergeTargets && <MergeDialog lib={lib} courses={mergeTargets.map((id) => courses.find((course) => course.id === id)).filter((course): course is Course => Boolean(course))}
+      onClose={() => setMergeTargets(null)} onMerge={(title) => mergeCourses(mergeTargets, title)}/>}
     {quickStart && <QuickStartModal lib={lib} placement={quickStart} starting={baseRecorder.state === 'starting'} onStart={actions.startRecording} onClose={() => setQuickStart(null)}/>}
     {paletteOpen && <CommandPalette lib={lib} canRecord={!baseRecorder.course} onNavigate={navigate} onNewCourse={() => openQuickStart()} onImport={() => void importAudio()} onSettings={() => setSettingsOpen(true)} onClose={() => setPaletteOpen(false)}/>}
     {settingsOpen && settings && <SettingsModal initial={settings} assets={assets} progress={globalProgress} updateStatus={updateStatus} recording={Boolean(baseRecorder.course)} onClose={() => setSettingsOpen(false)} onSaved={(value) => void saveSettings(value)} onDownload={() => void download()} onCheckUpdate={() => void checkUpdate()} onDownloadUpdate={() => void downloadUpdate()} onInstallUpdate={() => void installUpdate()}/>}
